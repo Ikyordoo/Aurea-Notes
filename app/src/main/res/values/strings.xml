@@ -1,0 +1,88 @@
+<resources>
+    <string name="app_name">Aurea Notes &amp; Journal</string>
+    <string name="brand_name">Aurea</string>
+    <string name="tagline">Everything worth keeping.</string>
+
+    <!-- Navigation destinations -->
+    <string name="nav_home">Home</string>
+    <string name="nav_notes">Notes</string>
+    <string name="nav_journal">Journal</string>
+    <string name="nav_search">Search</string>
+
+    <!-- Home Screen -->
+    <string name="option_notes">Notes</string>
+    <string name="option_notes_subtitle">Quick thoughts, outlines, and structured observations.</string>
+    <string name="option_notes_meta">Drafts · Lists · Commonplace</string>
+    <string name="option_notes_meta_count">Drafts · Lists · Commonplace · %1$d saved</string>
+    <string name="option_journal">Journal</string>
+    <string name="option_journal_subtitle">Unhurried daily reflections and chronological entries.</string>
+    <string name="option_journal_meta">Daily pages · Reflections · Archive</string>
+    <string name="option_journal_meta_count">Daily pages · Reflections · Archive · %1$d saved</string>
+    <string name="home_pinned_recent_title">Pinned &amp; Recent</string>
+    <string name="cd_open_option">Open %1$s</string>
+
+    <!-- Pinning & Sorting -->
+    <string name="action_pin">Pin</string>
+    <string name="action_unpin">Unpin</string>
+    <string name="label_pinned">Pinned</string>
+    <string name="sort_last_modified">Last Modified</string>
+    <string name="sort_created_date">Created Date</string>
+    <string name="sort_title_asc">Title A–Z</string>
+
+    <!-- Notes Screen & Editor -->
+    <string name="notes_title">Notes</string>
+    <string name="notes_subtitle">Structured observations and fragments.</string>
+    <string name="notes_empty_title">Nothing here yet.</string>
+    <string name="notes_empty_description">Keep ideas, useful information and little things worth remembering.</string>
+    <string name="action_new_note">New Note</string>
+    <string name="editor_new_note_title">New Note</string>
+    <string name="editor_edit_note_title">Edit Note</string>
+    <string name="note_title_label">Title</string>
+    <string name="note_title_placeholder">Give this note a clear title…</string>
+    <string name="note_content_label">Note</string>
+    <string name="note_content_placeholder">Write your thoughts, outlines or observations…</string>
+    <string name="note_validation_error">Please enter a title and note content before saving.</string>
+    <string name="note_last_modified">Modified %1$s</string>
+
+    <!-- Journal Screen & Editor -->
+    <string name="journal_title">Journal</string>
+    <string name="journal_subtitle">Unhurried pages for daily reflection.</string>
+    <string name="journal_empty_title">Your story starts here.</string>
+    <string name="journal_empty_description">Capture your thoughts, experiences and moments worth keeping.</string>
+    <string name="action_new_journal_entry">New Entry</string>
+    <string name="editor_new_journal_title">New Journal Entry</string>
+    <string name="editor_edit_journal_title">Journal Entry</string>
+    <string name="journal_title_label">Title (Optional)</string>
+    <string name="journal_title_placeholder">Optional title for this reflection…</string>
+    <string name="journal_content_label">Entry</string>
+    <string name="journal_content_placeholder">Begin writing your reflection…</string>
+    <string name="journal_untitled_fallback">Untitled Reflection</string>
+    <string name="journal_validation_error">Please write your journal entry before saving.</string>
+    <string name="journal_created_at">Created %1$s</string>
+    <string name="journal_modified_at">Last modified %1$s</string>
+
+    <!-- Common Editor & Confirmation Actions -->
+    <string name="action_save">Save</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_keep_editing">Keep Editing</string>
+    <string name="action_discard">Discard Changes</string>
+    <string name="dialog_discard_title">Discard unsaved changes?</string>
+    <string name="dialog_discard_message">You have unsaved edits. If you leave now, your changes will be lost.</string>
+    <string name="dialog_delete_note_title">Delete this note?</string>
+    <string name="dialog_delete_note_message">This note will be permanently removed from your device.</string>
+    <string name="dialog_delete_journal_title">Delete this journal entry?</string>
+    <string name="dialog_delete_journal_message">This journal entry will be permanently removed from your device.</string>
+
+    <!-- Search Screen -->
+    <string name="search_title">Search</string>
+    <string name="search_subtitle">Find notes and journal entries.</string>
+    <string name="search_placeholder">Search titles, passages, or dates...</string>
+    <string name="search_scope_all">All</string>
+    <string name="search_scope_notes">Notes</string>
+    <string name="search_scope_journal">Journal</string>
+    <string name="search_empty_prompt">Enter a word or phrase to search across your saved notes and journal entries.</string>
+    <string name="search_no_results">No matching notes or journal entries found.</string>
+    <string name="cd_search_icon">Search</string>
+    <string name="cd_clear_search">Clear search query</string>
+</resources>

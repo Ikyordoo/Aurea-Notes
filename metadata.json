@@ -1,0 +1,6 @@
+{
+  "name": "Aurea Notes & Journal",
+  "description": "A minimal, warm editorial notes and personal journal application crafted with Kotlin and Jetpack Compose.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
