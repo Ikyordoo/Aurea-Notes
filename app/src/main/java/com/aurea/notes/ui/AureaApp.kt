@@ -57,7 +57,7 @@ fun AureaApp() {
         )
     )
 
-    val notes by notesViewModel.notes.collectAsStateWithLifecycle()
+    val allNotes by notesViewModel.allNotes.collectAsStateWithLifecycle()
     val journalEntries by journalViewModel.entries.collectAsStateWithLifecycle()
     val notesEditorState by notesViewModel.editorState.collectAsStateWithLifecycle()
     val journalEditorState by journalViewModel.editorState.collectAsStateWithLifecycle()
@@ -178,7 +178,7 @@ fun AureaApp() {
         ) {
             composable(AureaDestination.HOME.route) {
                 HomeScreen(
-                    notes = notes,
+                    notes = allNotes,
                     journalEntries = journalEntries,
                     onOpenNotes = { requestNavigateToDestination(AureaDestination.NOTES) },
                     onOpenJournal = { requestNavigateToDestination(AureaDestination.JOURNAL) },

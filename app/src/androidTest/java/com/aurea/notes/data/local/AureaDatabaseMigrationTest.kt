@@ -1,11 +1,14 @@
 package com.aurea.notes.data.local
 
 import android.content.Context
+import androidx.room.Room
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -17,12 +20,19 @@ import org.junit.runner.RunWith
 import java.util.UUID
 
 /**
- * Genuine SQLite migration test verifying [AureaDatabase.MIGRATION_1_2].
+ * Genuine Room-level migration instrumentation tests verifying [AureaDatabase.MIGRATION_1_2]
+ * and [AureaDatabase.MIGRATION_2_3].
  *
- * Constructs a real version 1 SQLite database using the exact Stage 2.1 schema,
- * seeds existing user notes and journal entries, executes the production
- * [AureaDatabase.MIGRATION_1_2] migration object, and verifies both row preservation
- * and version 2 table schema metadata via `PRAGMA table_info`.
+ * Each test:
+ * 1. Constructs a real SQLite database file (`testDbName`) at version 1 or version 2 using
+ *    [SupportSQLiteOpenHelper] and seeds representative Notes and Journal records.
+ * 2. Closes the initial [SupportSQLiteOpenHelper] connection.
+ * 3. Reopens the exact same database file through [Room.databaseBuilder] with
+ *    [AureaDatabase.MIGRATION_1_2] and [AureaDatabase.MIGRATION_2_3] registered.
+ * 4. Forces Room to execute its migration container path and KSP-generated
+ *    `AureaDatabase_Impl.onValidateSchema` verification.
+ * 5. Verifies both low-level `PRAGMA table_info` metadata and entity reads through
+ *    Room's generated [NoteDao] and [JournalEntryDao].
  */
 @RunWith(AndroidJUnit4::class)
 class AureaDatabaseMigrationTest {
@@ -30,6 +40,7 @@ class AureaDatabaseMigrationTest {
     private lateinit var context: Context
     private lateinit var testDbName: String
     private var openHelper: SupportSQLiteOpenHelper? = null
+    private var migratedRoomDb: AureaDatabase? = null
 
     private data class ColumnSchemaInfo(
         val name: String,
@@ -49,26 +60,29 @@ class AureaDatabaseMigrationTest {
     @After
     fun tearDown() {
         try {
-            openHelper?.close()
+            closeInitialHelper()
+            migratedRoomDb?.close()
         } finally {
-            openHelper = null
+            migratedRoomDb = null
             context.deleteDatabase(testDbName)
         }
     }
 
     @Test
-    fun migrate1To2_preservesExistingNotesAndJournalEntries_andAddsNotNullIsPinnedWithDefaultZero() {
-        val db = createVersion1Database()
+    fun migrate1To2To3_preservesExistingRecords_andAddsIsPinnedCategoryAndMoodWithDefaults() = runBlocking {
+        val initialDb = createVersion1Database()
 
-        // Confirm version 1 schema does not yet contain is_pinned on either table
-        val v1NotesColumns = readTableColumns(db, "notes")
-        val v1JournalColumns = readTableColumns(db, "journal_entries")
+        // Confirm version 1 schema does not yet contain is_pinned, category, or mood
+        val v1NotesColumns = readTableColumns(initialDb, "notes")
+        val v1JournalColumns = readTableColumns(initialDb, "journal_entries")
         assertFalse(v1NotesColumns.containsKey("is_pinned"))
+        assertFalse(v1NotesColumns.containsKey("category"))
         assertFalse(v1JournalColumns.containsKey("is_pinned"))
+        assertFalse(v1JournalColumns.containsKey("mood"))
         assertEquals(6, v1NotesColumns.size)
         assertEquals(5, v1JournalColumns.size)
 
-        // 1. Insert an existing version 1 Note with distinct values
+        // 1. Seed an existing version 1 Note with distinct values
         val noteId = "note-v1-architectural-study"
         val noteTitle = "Limestone & Timber Proportions"
         val noteContent = "Notes on load-bearing masonry and natural light diffusion across the courtyard."
@@ -76,7 +90,7 @@ class AureaDatabaseMigrationTest {
         val noteCreatedAt = 1_700_010_000_000L
         val noteUpdatedAt = 1_700_020_500_000L
 
-        db.execSQL(
+        initialDb.execSQL(
             """
             INSERT INTO `notes` (`id`, `title`, `content`, `content_format`, `created_at`, `updated_at`)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -84,14 +98,14 @@ class AureaDatabaseMigrationTest {
             arrayOf<Any>(noteId, noteTitle, noteContent, noteFormat, noteCreatedAt, noteUpdatedAt)
         )
 
-        // 2. Insert existing version 1 Journal entries (one untitled/empty title, one titled)
+        // 2. Seed existing version 1 Journal entries (one untitled/empty title, one titled)
         val untitledEntryId = "journal-v1-untitled-dawn"
         val untitledEntryTitle = ""
         val untitledEntryContent = "Quiet morning mist over the valley before sunrise."
         val untitledEntryCreatedAt = 1_700_030_000_000L
         val untitledEntryUpdatedAt = 1_700_030_900_000L
 
-        db.execSQL(
+        initialDb.execSQL(
             """
             INSERT INTO `journal_entries` (`id`, `title`, `content`, `created_at`, `updated_at`)
             VALUES (?, ?, ?, ?, ?)
@@ -111,7 +125,7 @@ class AureaDatabaseMigrationTest {
         val titledEntryCreatedAt = 1_700_040_000_000L
         val titledEntryUpdatedAt = 1_700_045_000_000L
 
-        db.execSQL(
+        initialDb.execSQL(
             """
             INSERT INTO `journal_entries` (`id`, `title`, `content`, `created_at`, `updated_at`)
             VALUES (?, ?, ?, ?, ?)
@@ -125,167 +139,385 @@ class AureaDatabaseMigrationTest {
             )
         )
 
-        // 3. Execute the actual production Room Migration (1 -> 2)
-        AureaDatabase.MIGRATION_1_2.migrate(db)
+        // 3. Close the original version 1 SQLite helper before opening the file through Room
+        closeInitialHelper()
 
-        // 4. Verify resulting version 2 schema on `notes` via PRAGMA table_info
-        val v2NotesColumns = readTableColumns(db, "notes")
+        // 4. Open the same physical database file through Room with registered migrations (1 -> 2 -> 3)
+        val roomDb = openDatabaseThroughRoom()
+        val migratedSqliteDb = roomDb.openHelper.writableDatabase
+        assertEquals(3, migratedSqliteDb.version)
+
+        // 5. Verify resulting version 3 schema metadata on both tables via PRAGMA table_info
+        assertVersion3Schema(migratedSqliteDb)
+
+        // 6. Verify migrated Note through Room's generated NoteDao
+        val noteDao = roomDb.noteDao()
+        val allNotes = noteDao.observeAllNotes().first()
+        assertEquals(1, allNotes.size)
+
+        val migratedNote = noteDao.getNoteById(noteId)
+        assertNotNull(migratedNote)
+        assertEquals(noteId, migratedNote!!.id)
+        assertEquals(noteTitle, migratedNote.title)
+        assertEquals(noteContent, migratedNote.content)
+        assertEquals(noteFormat, migratedNote.contentFormat)
+        assertEquals(noteCreatedAt, migratedNote.createdAt)
+        assertEquals(noteUpdatedAt, migratedNote.updatedAt)
+        assertFalse(migratedNote.isPinned)
+        assertEquals("", migratedNote.category)
+
+        // 7. Verify migrated Journal entries through Room's generated JournalEntryDao
+        val journalDao = roomDb.journalEntryDao()
+        val allEntries = journalDao.observeAllEntries().first()
+        assertEquals(2, allEntries.size)
+        // Newest created_at (titledEntryId) appears first when both are unpinned
+        assertEquals(listOf(titledEntryId, untitledEntryId), allEntries.map { it.id })
+
+        val migratedUntitled = journalDao.getEntryById(untitledEntryId)
+        assertNotNull(migratedUntitled)
+        assertEquals(untitledEntryId, migratedUntitled!!.id)
+        assertEquals(untitledEntryTitle, migratedUntitled.title)
+        assertEquals(untitledEntryContent, migratedUntitled.content)
+        assertEquals(untitledEntryCreatedAt, migratedUntitled.createdAt)
+        assertEquals(untitledEntryUpdatedAt, migratedUntitled.updatedAt)
+        assertFalse(migratedUntitled.isPinned)
+        assertEquals("", migratedUntitled.mood)
+
+        val migratedTitled = journalDao.getEntryById(titledEntryId)
+        assertNotNull(migratedTitled)
+        assertEquals(titledEntryId, migratedTitled!!.id)
+        assertEquals(titledEntryTitle, migratedTitled.title)
+        assertEquals(titledEntryContent, migratedTitled.content)
+        assertEquals(titledEntryCreatedAt, migratedTitled.createdAt)
+        assertEquals(titledEntryUpdatedAt, migratedTitled.updatedAt)
+        assertFalse(migratedTitled.isPinned)
+        assertEquals("", migratedTitled.mood)
+    }
+
+    @Test
+    fun migrate2To3_preservesPinnedAndUnpinnedRecords_andAddsCategoryAndMoodWithEmptyStringDefaults() = runBlocking {
+        val initialDb = createVersion2Database()
+
+        // Confirm version 2 schema contains is_pinned, but does not yet contain category or mood
+        val v2NotesColumns = readTableColumns(initialDb, "notes")
+        val v2JournalColumns = readTableColumns(initialDb, "journal_entries")
+        assertTrue(v2NotesColumns.containsKey("is_pinned"))
+        assertFalse(v2NotesColumns.containsKey("category"))
+        assertTrue(v2JournalColumns.containsKey("is_pinned"))
+        assertFalse(v2JournalColumns.containsKey("mood"))
+        assertEquals(7, v2NotesColumns.size)
+        assertEquals(6, v2JournalColumns.size)
+
+        // 1. Seed two version 2 Notes (one pinned = 1, one unpinned = 0)
+        val pinnedNoteId = "note-v2-pinned-strategy"
+        val pinnedNoteTitle = "Annual Research Roadmap"
+        val pinnedNoteContent = "Key milestones for archival indexing and typography studies."
+        val pinnedNoteFormat = NoteEntity.FORMAT_PLAIN_TEXT
+        val pinnedNoteCreatedAt = 1_700_100_000_000L
+        val pinnedNoteUpdatedAt = 1_700_110_000_000L
+
+        initialDb.execSQL(
+            """
+            INSERT INTO `notes` (`id`, `title`, `content`, `content_format`, `created_at`, `updated_at`, `is_pinned`)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """.trimIndent(),
+            arrayOf<Any>(
+                pinnedNoteId,
+                pinnedNoteTitle,
+                pinnedNoteContent,
+                pinnedNoteFormat,
+                pinnedNoteCreatedAt,
+                pinnedNoteUpdatedAt,
+                1
+            )
+        )
+
+        val unpinnedNoteId = "note-v2-unpinned-reference"
+        val unpinnedNoteTitle = "Botanical Illustrations Catalogue"
+        val unpinnedNoteContent = "Collected plates from the 18th-century herbarium."
+        val unpinnedNoteFormat = NoteEntity.FORMAT_PLAIN_TEXT
+        val unpinnedNoteCreatedAt = 1_700_120_000_000L
+        val unpinnedNoteUpdatedAt = 1_700_125_000_000L
+
+        initialDb.execSQL(
+            """
+            INSERT INTO `notes` (`id`, `title`, `content`, `content_format`, `created_at`, `updated_at`, `is_pinned`)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """.trimIndent(),
+            arrayOf<Any>(
+                unpinnedNoteId,
+                unpinnedNoteTitle,
+                unpinnedNoteContent,
+                unpinnedNoteFormat,
+                unpinnedNoteCreatedAt,
+                unpinnedNoteUpdatedAt,
+                0
+            )
+        )
+
+        // 2. Seed two version 2 Journal entries (one pinned = 1, one unpinned = 0)
+        val pinnedEntryId = "journal-v2-pinned-milestone"
+        val pinnedEntryTitle = "First Exhibition Opening"
+        val pinnedEntryContent = "A quiet evening sharing the monograph collection."
+        val pinnedEntryCreatedAt = 1_700_130_000_000L
+        val pinnedEntryUpdatedAt = 1_700_135_000_000L
+
+        initialDb.execSQL(
+            """
+            INSERT INTO `journal_entries` (`id`, `title`, `content`, `created_at`, `updated_at`, `is_pinned`)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """.trimIndent(),
+            arrayOf<Any>(
+                pinnedEntryId,
+                pinnedEntryTitle,
+                pinnedEntryContent,
+                pinnedEntryCreatedAt,
+                pinnedEntryUpdatedAt,
+                1
+            )
+        )
+
+        val unpinnedEntryId = "journal-v2-unpinned-walk"
+        val unpinnedEntryTitle = ""
+        val unpinnedEntryContent = "Late afternoon walk along the river."
+        val unpinnedEntryCreatedAt = 1_700_140_000_000L
+        val unpinnedEntryUpdatedAt = 1_700_140_000_000L
+
+        initialDb.execSQL(
+            """
+            INSERT INTO `journal_entries` (`id`, `title`, `content`, `created_at`, `updated_at`, `is_pinned`)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """.trimIndent(),
+            arrayOf<Any>(
+                unpinnedEntryId,
+                unpinnedEntryTitle,
+                unpinnedEntryContent,
+                unpinnedEntryCreatedAt,
+                unpinnedEntryUpdatedAt,
+                0
+            )
+        )
+
+        // 3. Close the original version 2 SQLite helper before opening the file through Room
+        closeInitialHelper()
+
+        // 4. Open the same physical database file through Room with registered migrations (2 -> 3)
+        val roomDb = openDatabaseThroughRoom()
+        val migratedSqliteDb = roomDb.openHelper.writableDatabase
+        assertEquals(3, migratedSqliteDb.version)
+
+        // 5. Verify resulting version 3 schema metadata on both tables via PRAGMA table_info
+        assertVersion3Schema(migratedSqliteDb)
+
+        // 6. Verify Notes count, pinned-first ordering, fields, pinning state, and empty-string category default via NoteDao
+        val noteDao = roomDb.noteDao()
+        val observedNotes = noteDao.observeAllNotes().first()
+        assertEquals(2, observedNotes.size)
+        // Pinned note must appear first despite older updatedAt timestamp
+        assertEquals(listOf(pinnedNoteId, unpinnedNoteId), observedNotes.map { it.id })
+
+        val migratedPinnedNote = noteDao.getNoteById(pinnedNoteId)
+        assertNotNull(migratedPinnedNote)
+        assertEquals(pinnedNoteId, migratedPinnedNote!!.id)
+        assertEquals(pinnedNoteTitle, migratedPinnedNote.title)
+        assertEquals(pinnedNoteContent, migratedPinnedNote.content)
+        assertEquals(pinnedNoteFormat, migratedPinnedNote.contentFormat)
+        assertEquals(pinnedNoteCreatedAt, migratedPinnedNote.createdAt)
+        assertEquals(pinnedNoteUpdatedAt, migratedPinnedNote.updatedAt)
+        assertTrue(migratedPinnedNote.isPinned)
+        assertEquals("", migratedPinnedNote.category)
+
+        val migratedUnpinnedNote = noteDao.getNoteById(unpinnedNoteId)
+        assertNotNull(migratedUnpinnedNote)
+        assertEquals(unpinnedNoteId, migratedUnpinnedNote!!.id)
+        assertEquals(unpinnedNoteTitle, migratedUnpinnedNote.title)
+        assertEquals(unpinnedNoteContent, migratedUnpinnedNote.content)
+        assertEquals(unpinnedNoteFormat, migratedUnpinnedNote.contentFormat)
+        assertEquals(unpinnedNoteCreatedAt, migratedUnpinnedNote.createdAt)
+        assertEquals(unpinnedNoteUpdatedAt, migratedUnpinnedNote.updatedAt)
+        assertFalse(migratedUnpinnedNote.isPinned)
+        assertEquals("", migratedUnpinnedNote.category)
+
+        // 7. Verify Journal entries count, pinned-first ordering, fields, pinning state, and empty-string mood default via JournalEntryDao
+        val journalDao = roomDb.journalEntryDao()
+        val observedEntries = journalDao.observeAllEntries().first()
+        assertEquals(2, observedEntries.size)
+        // Pinned journal entry must appear first despite older createdAt timestamp
+        assertEquals(listOf(pinnedEntryId, unpinnedEntryId), observedEntries.map { it.id })
+
+        val migratedPinnedEntry = journalDao.getEntryById(pinnedEntryId)
+        assertNotNull(migratedPinnedEntry)
+        assertEquals(pinnedEntryId, migratedPinnedEntry!!.id)
+        assertEquals(pinnedEntryTitle, migratedPinnedEntry.title)
+        assertEquals(pinnedEntryContent, migratedPinnedEntry.content)
+        assertEquals(pinnedEntryCreatedAt, migratedPinnedEntry.createdAt)
+        assertEquals(pinnedEntryUpdatedAt, migratedPinnedEntry.updatedAt)
+        assertTrue(migratedPinnedEntry.isPinned)
+        assertEquals("", migratedPinnedEntry.mood)
+
+        val migratedUnpinnedEntry = journalDao.getEntryById(unpinnedEntryId)
+        assertNotNull(migratedUnpinnedEntry)
+        assertEquals(unpinnedEntryId, migratedUnpinnedEntry!!.id)
+        assertEquals(unpinnedEntryTitle, migratedUnpinnedEntry.title)
+        assertEquals(unpinnedEntryContent, migratedUnpinnedEntry.content)
+        assertEquals(unpinnedEntryCreatedAt, migratedUnpinnedEntry.createdAt)
+        assertEquals(unpinnedEntryUpdatedAt, migratedUnpinnedEntry.updatedAt)
+        assertFalse(migratedUnpinnedEntry.isPinned)
+        assertEquals("", migratedUnpinnedEntry.mood)
+    }
+
+    private fun closeInitialHelper() {
+        openHelper?.close()
+        openHelper = null
+    }
+
+    private fun openDatabaseThroughRoom(): AureaDatabase {
+        val db = Room.databaseBuilder(
+            context,
+            AureaDatabase::class.java,
+            testDbName
+        )
+            .addMigrations(
+                AureaDatabase.MIGRATION_1_2,
+                AureaDatabase.MIGRATION_2_3
+            )
+            .allowMainThreadQueries()
+            .build()
+        migratedRoomDb = db
+        return db
+    }
+
+    private fun assertVersion3Schema(db: SupportSQLiteDatabase) {
+        val v3NotesColumns = readTableColumns(db, "notes")
         assertEquals(
-            setOf("id", "title", "content", "content_format", "created_at", "updated_at", "is_pinned"),
-            v2NotesColumns.keys
+            setOf(
+                "id",
+                "title",
+                "content",
+                "content_format",
+                "created_at",
+                "updated_at",
+                "is_pinned",
+                "category"
+            ),
+            v3NotesColumns.keys
         )
         assertColumnSchema(
-            column = v2NotesColumns["id"],
+            column = v3NotesColumns["id"],
             expectedType = "TEXT",
             expectedNotNull = true,
             expectedDefault = null,
             expectedPrimaryKey = true
         )
         assertColumnSchema(
-            column = v2NotesColumns["title"],
+            column = v3NotesColumns["title"],
             expectedType = "TEXT",
             expectedNotNull = true,
             expectedDefault = null,
             expectedPrimaryKey = false
         )
         assertColumnSchema(
-            column = v2NotesColumns["content"],
+            column = v3NotesColumns["content"],
             expectedType = "TEXT",
             expectedNotNull = true,
             expectedDefault = null,
             expectedPrimaryKey = false
         )
         assertColumnSchema(
-            column = v2NotesColumns["content_format"],
+            column = v3NotesColumns["content_format"],
             expectedType = "TEXT",
             expectedNotNull = true,
             expectedDefault = null,
             expectedPrimaryKey = false
         )
         assertColumnSchema(
-            column = v2NotesColumns["created_at"],
+            column = v3NotesColumns["created_at"],
             expectedType = "INTEGER",
             expectedNotNull = true,
             expectedDefault = null,
             expectedPrimaryKey = false
         )
         assertColumnSchema(
-            column = v2NotesColumns["updated_at"],
+            column = v3NotesColumns["updated_at"],
             expectedType = "INTEGER",
             expectedNotNull = true,
             expectedDefault = null,
             expectedPrimaryKey = false
         )
         assertColumnSchema(
-            column = v2NotesColumns["is_pinned"],
+            column = v3NotesColumns["is_pinned"],
             expectedType = "INTEGER",
             expectedNotNull = true,
             expectedDefault = "0",
             expectedPrimaryKey = false
         )
+        assertColumnSchema(
+            column = v3NotesColumns["category"],
+            expectedType = "TEXT",
+            expectedNotNull = true,
+            expectedDefault = "''",
+            expectedPrimaryKey = false
+        )
 
-        // 5. Verify resulting version 2 schema on `journal_entries` via PRAGMA table_info
-        val v2JournalColumns = readTableColumns(db, "journal_entries")
+        val v3JournalColumns = readTableColumns(db, "journal_entries")
         assertEquals(
-            setOf("id", "title", "content", "created_at", "updated_at", "is_pinned"),
-            v2JournalColumns.keys
+            setOf("id", "title", "content", "created_at", "updated_at", "is_pinned", "mood"),
+            v3JournalColumns.keys
         )
         assertColumnSchema(
-            column = v2JournalColumns["id"],
+            column = v3JournalColumns["id"],
             expectedType = "TEXT",
             expectedNotNull = true,
             expectedDefault = null,
             expectedPrimaryKey = true
         )
         assertColumnSchema(
-            column = v2JournalColumns["title"],
+            column = v3JournalColumns["title"],
             expectedType = "TEXT",
             expectedNotNull = true,
             expectedDefault = null,
             expectedPrimaryKey = false
         )
         assertColumnSchema(
-            column = v2JournalColumns["content"],
+            column = v3JournalColumns["content"],
             expectedType = "TEXT",
             expectedNotNull = true,
             expectedDefault = null,
             expectedPrimaryKey = false
         )
         assertColumnSchema(
-            column = v2JournalColumns["created_at"],
+            column = v3JournalColumns["created_at"],
             expectedType = "INTEGER",
             expectedNotNull = true,
             expectedDefault = null,
             expectedPrimaryKey = false
         )
         assertColumnSchema(
-            column = v2JournalColumns["updated_at"],
+            column = v3JournalColumns["updated_at"],
             expectedType = "INTEGER",
             expectedNotNull = true,
             expectedDefault = null,
             expectedPrimaryKey = false
         )
         assertColumnSchema(
-            column = v2JournalColumns["is_pinned"],
+            column = v3JournalColumns["is_pinned"],
             expectedType = "INTEGER",
             expectedNotNull = true,
             expectedDefault = "0",
             expectedPrimaryKey = false
         )
-
-        // 6. Verify existing Note survived intact with is_pinned = 0
-        db.query(
-            "SELECT `id`, `title`, `content`, `content_format`, `created_at`, `updated_at`, `is_pinned` FROM `notes` WHERE `id` = ?",
-            arrayOf<Any>(noteId)
-        ).use { cursor ->
-            assertEquals(1, cursor.count)
-            assertTrue(cursor.moveToFirst())
-            assertEquals(noteId, cursor.getString(cursor.getColumnIndexOrThrow("id")))
-            assertEquals(noteTitle, cursor.getString(cursor.getColumnIndexOrThrow("title")))
-            assertEquals(noteContent, cursor.getString(cursor.getColumnIndexOrThrow("content")))
-            assertEquals(noteFormat, cursor.getString(cursor.getColumnIndexOrThrow("content_format")))
-            assertEquals(noteCreatedAt, cursor.getLong(cursor.getColumnIndexOrThrow("created_at")))
-            assertEquals(noteUpdatedAt, cursor.getLong(cursor.getColumnIndexOrThrow("updated_at")))
-
-            val isPinnedIndex = cursor.getColumnIndexOrThrow("is_pinned")
-            assertFalse(cursor.isNull(isPinnedIndex))
-            assertEquals(0, cursor.getInt(isPinnedIndex))
-        }
-
-        // 7. Verify existing Journal entries survived intact with is_pinned = 0
-        db.query(
-            "SELECT `id`, `title`, `content`, `created_at`, `updated_at`, `is_pinned` FROM `journal_entries` ORDER BY `created_at` ASC"
-        ).use { cursor ->
-            assertEquals(2, cursor.count)
-
-            // First entry: untitled journal entry
-            assertTrue(cursor.moveToFirst())
-            assertEquals(untitledEntryId, cursor.getString(cursor.getColumnIndexOrThrow("id")))
-            assertEquals(untitledEntryTitle, cursor.getString(cursor.getColumnIndexOrThrow("title")))
-            assertEquals(untitledEntryContent, cursor.getString(cursor.getColumnIndexOrThrow("content")))
-            assertEquals(untitledEntryCreatedAt, cursor.getLong(cursor.getColumnIndexOrThrow("created_at")))
-            assertEquals(untitledEntryUpdatedAt, cursor.getLong(cursor.getColumnIndexOrThrow("updated_at")))
-            val untitledPinnedIdx = cursor.getColumnIndexOrThrow("is_pinned")
-            assertFalse(cursor.isNull(untitledPinnedIdx))
-            assertEquals(0, cursor.getInt(untitledPinnedIdx))
-
-            // Second entry: titled journal entry
-            assertTrue(cursor.moveToNext())
-            assertEquals(titledEntryId, cursor.getString(cursor.getColumnIndexOrThrow("id")))
-            assertEquals(titledEntryTitle, cursor.getString(cursor.getColumnIndexOrThrow("title")))
-            assertEquals(titledEntryContent, cursor.getString(cursor.getColumnIndexOrThrow("content")))
-            assertEquals(titledEntryCreatedAt, cursor.getLong(cursor.getColumnIndexOrThrow("created_at")))
-            assertEquals(titledEntryUpdatedAt, cursor.getLong(cursor.getColumnIndexOrThrow("updated_at")))
-            val titledPinnedIdx = cursor.getColumnIndexOrThrow("is_pinned")
-            assertFalse(cursor.isNull(titledPinnedIdx))
-            assertEquals(0, cursor.getInt(titledPinnedIdx))
-        }
+        assertColumnSchema(
+            column = v3JournalColumns["mood"],
+            expectedType = "TEXT",
+            expectedNotNull = true,
+            expectedDefault = "''",
+            expectedPrimaryKey = false
+        )
     }
 
     private fun createVersion1Database(): SupportSQLiteDatabase {
         val callback = object : SupportSQLiteOpenHelper.Callback(1) {
             override fun onCreate(db: SupportSQLiteDatabase) {
-                // Exact Stage 2.1 Room version 1 schema for `notes`
                 db.execSQL(
                     """
                     CREATE TABLE IF NOT EXISTS `notes` (
@@ -299,8 +531,6 @@ class AureaDatabaseMigrationTest {
                     )
                     """.trimIndent()
                 )
-
-                // Exact Stage 2.1 Room version 1 schema for `journal_entries`
                 db.execSQL(
                     """
                     CREATE TABLE IF NOT EXISTS `journal_entries` (
@@ -320,7 +550,58 @@ class AureaDatabaseMigrationTest {
                 oldVersion: Int,
                 newVersion: Int
             ) {
-                // Handled explicitly in test via AureaDatabase.MIGRATION_1_2.migrate(db)
+                // Handled by Room.databaseBuilder when reopening testDbName
+            }
+        }
+
+        val configuration = SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(testDbName)
+            .callback(callback)
+            .build()
+
+        val helper = FrameworkSQLiteOpenHelperFactory().create(configuration)
+        openHelper = helper
+        return helper.writableDatabase
+    }
+
+    private fun createVersion2Database(): SupportSQLiteDatabase {
+        val callback = object : SupportSQLiteOpenHelper.Callback(2) {
+            override fun onCreate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `notes` (
+                        `id` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `content` TEXT NOT NULL,
+                        `content_format` TEXT NOT NULL,
+                        `created_at` INTEGER NOT NULL,
+                        `updated_at` INTEGER NOT NULL,
+                        `is_pinned` INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `journal_entries` (
+                        `id` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `content` TEXT NOT NULL,
+                        `created_at` INTEGER NOT NULL,
+                        `updated_at` INTEGER NOT NULL,
+                        `is_pinned` INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+            }
+
+            override fun onUpgrade(
+                db: SupportSQLiteDatabase,
+                oldVersion: Int,
+                newVersion: Int
+            ) {
+                // Handled by Room.databaseBuilder when reopening testDbName
             }
         }
 

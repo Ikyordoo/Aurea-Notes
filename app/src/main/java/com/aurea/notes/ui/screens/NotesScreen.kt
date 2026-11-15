@@ -11,15 +11,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -45,10 +49,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aurea.notes.R
 import com.aurea.notes.data.local.NoteEntity
+import com.aurea.notes.data.repository.CategoryOperationResult
+import com.aurea.notes.data.repository.NoteCategoryFilter
 import com.aurea.notes.data.repository.NoteSortOrder
 import com.aurea.notes.ui.components.DeleteConfirmationDialog
 import com.aurea.notes.ui.components.DiscardChangesDialog
 import com.aurea.notes.ui.components.formatEditorialTimestamp
+import com.aurea.notes.ui.viewmodels.CategoryManagerUiState
 import com.aurea.notes.ui.viewmodels.NoteEditorUiState
 import com.aurea.notes.ui.viewmodels.NotesViewModel
 
@@ -58,14 +65,39 @@ fun NotesScreen(
     modifier: Modifier = Modifier
 ) {
     val notes by viewModel.notes.collectAsStateWithLifecycle()
+    val allNotes by viewModel.allNotes.collectAsStateWithLifecycle()
     val sortOrder by viewModel.sortOrder.collectAsStateWithLifecycle()
+    val categoryFilter by viewModel.categoryFilter.collectAsStateWithLifecycle()
+    val categories by viewModel.categories.collectAsStateWithLifecycle()
     val editorState by viewModel.editorState.collectAsStateWithLifecycle()
+    val categoryManagerState by viewModel.categoryManagerState.collectAsStateWithLifecycle()
+
+    if (categoryManagerState.isOpen) {
+        CategoryManagementDialog(
+            state = categoryManagerState,
+            categories = categories,
+            onNewCategoryInputChange = viewModel::onNewCategoryInputChange,
+            onCreateCategory = { viewModel.createCategory() },
+            onStartRename = viewModel::startRenamingCategory,
+            onRenameInputChange = viewModel::onRenameInputChange,
+            onCancelRename = viewModel::cancelRenamingCategory,
+            onConfirmRename = { viewModel.renameCategory() },
+            onRequestDelete = viewModel::requestDeleteCategory,
+            onDismissDeleteConfirmation = viewModel::dismissDeleteCategoryConfirmation,
+            onConfirmDelete = { viewModel.confirmDeleteCategory() },
+            onClose = viewModel::closeCategoryManager
+        )
+    }
 
     if (editorState.isOpen) {
         NoteEditorView(
             state = editorState,
+            categories = categories,
             onTitleChange = viewModel::onTitleChange,
             onContentChange = viewModel::onContentChange,
+            onCategoryChange = viewModel::onCategoryChange,
+            onClearCategory = viewModel::clearEditorCategory,
+            onManageCategories = viewModel::openCategoryManager,
             onTogglePinned = viewModel::toggleEditorPinned,
             onSave = { viewModel.saveNote() },
             onCancel = viewModel::requestCancelEditor,
@@ -79,8 +111,13 @@ fun NotesScreen(
     } else {
         NotesListView(
             notes = notes,
+            totalNotesCount = allNotes.size,
             sortOrder = sortOrder,
+            categoryFilter = categoryFilter,
+            categories = categories,
             onSortOrderChange = viewModel::setSortOrder,
+            onCategoryFilterChange = viewModel::setCategoryFilter,
+            onManageCategories = viewModel::openCategoryManager,
             onCreateNote = viewModel::startNewNote,
             onOpenNote = viewModel::openNote,
             onTogglePin = viewModel::toggleNotePinned,
@@ -92,8 +129,13 @@ fun NotesScreen(
 @Composable
 private fun NotesListView(
     notes: List<NoteEntity>,
+    totalNotesCount: Int,
     sortOrder: NoteSortOrder,
+    categoryFilter: NoteCategoryFilter,
+    categories: List<String>,
     onSortOrderChange: (NoteSortOrder) -> Unit,
+    onCategoryFilterChange: (NoteCategoryFilter) -> Unit,
+    onManageCategories: () -> Unit,
     onCreateNote: () -> Unit,
     onOpenNote: (NoteEntity) -> Unit,
     onTogglePin: (NoteEntity) -> Unit,
@@ -107,24 +149,52 @@ private fun NotesListView(
                 .fillMaxSize()
                 .padding(horizontal = 24.dp, vertical = 32.dp)
         ) {
-            Text(
-                text = stringResource(id = R.string.notes_title),
-                style = MaterialTheme.typography.displayMedium,
-                color = colorScheme.onBackground
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = stringResource(id = R.string.notes_subtitle),
-                style = MaterialTheme.typography.bodyMedium,
-                color = colorScheme.secondary
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(id = R.string.notes_title),
+                        style = MaterialTheme.typography.displayMedium,
+                        color = colorScheme.onBackground
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = stringResource(id = R.string.notes_subtitle),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colorScheme.secondary
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onManageCategories,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, colorScheme.outline),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = stringResource(id = R.string.action_manage_categories),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = colorScheme.primary
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(20.dp))
             HorizontalDivider(thickness = 1.dp, color = colorScheme.outline)
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Sorting selector (shown when notes exist)
-            if (notes.isNotEmpty()) {
+            NotesCategoryFilterBar(
+                selectedFilter = categoryFilter,
+                categories = categories,
+                onSelectFilter = onCategoryFilterChange
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (totalNotesCount > 0) {
                 NotesSortBar(
                     selectedOrder = sortOrder,
                     onSelectOrder = onSortOrderChange
@@ -133,6 +203,28 @@ private fun NotesListView(
             }
 
             if (notes.isEmpty()) {
+                val (emptyTitle, emptyDescription) = when (categoryFilter) {
+                    is NoteCategoryFilter.Category -> {
+                        stringResource(
+                            id = R.string.notes_empty_category_title,
+                            categoryFilter.name
+                        ) to stringResource(id = R.string.notes_empty_category_description)
+                    }
+                    NoteCategoryFilter.Uncategorized -> {
+                        if (totalNotesCount > 0) {
+                            stringResource(id = R.string.notes_empty_uncategorized_title) to
+                                stringResource(id = R.string.notes_empty_uncategorized_description)
+                        } else {
+                            stringResource(id = R.string.notes_empty_title) to
+                                stringResource(id = R.string.notes_empty_description)
+                        }
+                    }
+                    NoteCategoryFilter.All -> {
+                        stringResource(id = R.string.notes_empty_title) to
+                            stringResource(id = R.string.notes_empty_description)
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(8.dp))
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -146,13 +238,13 @@ private fun NotesListView(
                             .padding(horizontal = 28.dp, vertical = 40.dp)
                     ) {
                         Text(
-                            text = stringResource(id = R.string.notes_empty_title),
+                            text = emptyTitle,
                             style = MaterialTheme.typography.headlineMedium,
                             color = colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            text = stringResource(id = R.string.notes_empty_description),
+                            text = emptyDescription,
                             style = MaterialTheme.typography.bodyMedium,
                             color = colorScheme.secondary
                         )
@@ -195,6 +287,66 @@ private fun NotesListView(
                 )
             }
         )
+    }
+}
+
+@Composable
+private fun NotesCategoryFilterBar(
+    selectedFilter: NoteCategoryFilter,
+    categories: List<String>,
+    onSelectFilter: (NoteCategoryFilter) -> Unit
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val allNotesLabel = stringResource(id = R.string.category_filter_all)
+    val uncategorizedLabel = stringResource(id = R.string.category_filter_uncategorized)
+
+    val filterItems: List<Pair<NoteCategoryFilter, String>> = buildList {
+        add(NoteCategoryFilter.All to allNotesLabel)
+        add(NoteCategoryFilter.Uncategorized to uncategorizedLabel)
+        categories.forEach { category ->
+            add(NoteCategoryFilter.Category(category) to category)
+        }
+    }
+
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        items(
+            items = filterItems,
+            key = { (filter, _) ->
+                when (filter) {
+                    NoteCategoryFilter.All -> "filter-all"
+                    NoteCategoryFilter.Uncategorized -> "filter-uncategorized"
+                    is NoteCategoryFilter.Category -> "filter-cat-${filter.name.lowercase()}"
+                }
+            }
+        ) { (filter, label) ->
+            val isSelected = when {
+                selectedFilter is NoteCategoryFilter.All && filter is NoteCategoryFilter.All -> true
+                selectedFilter is NoteCategoryFilter.Uncategorized && filter is NoteCategoryFilter.Uncategorized -> true
+                selectedFilter is NoteCategoryFilter.Category && filter is NoteCategoryFilter.Category ->
+                    selectedFilter.name.equals(filter.name, ignoreCase = true)
+                else -> false
+            }
+
+            Surface(
+                onClick = { onSelectFilter(filter) },
+                shape = RoundedCornerShape(10.dp),
+                color = if (isSelected) colorScheme.primary else colorScheme.surface,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (isSelected) colorScheme.primary else colorScheme.outline
+                )
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isSelected) colorScheme.onPrimary else colorScheme.secondary,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                )
+            }
+        }
     }
 }
 
@@ -251,10 +403,16 @@ private fun NoteListItemCard(
         id = R.string.note_last_modified,
         formatEditorialTimestamp(note.updatedAt)
     )
-    val metaLine = if (note.isPinned) {
-        stringResource(id = R.string.label_pinned) + " · " + modifiedText
-    } else {
-        modifiedText
+    val metaLine = buildString {
+        if (note.isPinned) {
+            append(stringResource(id = R.string.label_pinned))
+            append(" · ")
+        }
+        if (note.category.isNotBlank()) {
+            append(note.category)
+            append(" · ")
+        }
+        append(modifiedText)
     }
 
     Card(
@@ -295,7 +453,23 @@ private fun NoteListItemCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            if (note.category.isNotBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, colorScheme.outline)
+                ) {
+                    Text(
+                        text = note.category,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = note.content,
                 style = MaterialTheme.typography.bodyMedium,
@@ -316,8 +490,12 @@ private fun NoteListItemCard(
 @Composable
 private fun NoteEditorView(
     state: NoteEditorUiState,
+    categories: List<String>,
     onTitleChange: (String) -> Unit,
     onContentChange: (String) -> Unit,
+    onCategoryChange: (String) -> Unit,
+    onClearCategory: () -> Unit,
+    onManageCategories: () -> Unit,
     onTogglePinned: () -> Unit,
     onSave: () -> Unit,
     onCancel: () -> Unit,
@@ -434,7 +612,7 @@ private fun NoteEditorView(
 
         Spacer(modifier = Modifier.height(16.dp))
         HorizontalDivider(thickness = 1.dp, color = colorScheme.outline)
-        Spacer(modifier = Modifier.height(18.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         if (state.showValidationError) {
             Surface(
@@ -471,6 +649,17 @@ private fun NoteEditorView(
                 focusedTextColor = colorScheme.onSurface,
                 unfocusedTextColor = colorScheme.onSurface
             )
+        )
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Optional Category Selector
+        NoteCategorySelectorSection(
+            selectedCategory = state.category,
+            categories = categories,
+            onSelectCategory = onCategoryChange,
+            onClearCategory = onClearCategory,
+            onManageCategories = onManageCategories
         )
 
         Spacer(modifier = Modifier.height(14.dp))
@@ -524,4 +713,337 @@ private fun NoteEditorView(
             }
         }
     }
+}
+
+@Composable
+private fun NoteCategorySelectorSection(
+    selectedCategory: String,
+    categories: List<String>,
+    onSelectCategory: (String) -> Unit,
+    onClearCategory: () -> Unit,
+    onManageCategories: () -> Unit
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val displayCategories = buildList {
+        addAll(categories)
+        if (selectedCategory.isNotBlank() &&
+            categories.none { it.equals(selectedCategory.trim(), ignoreCase = true) }
+        ) {
+            add(selectedCategory.trim())
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = stringResource(id = R.string.note_category_label),
+                style = MaterialTheme.typography.labelLarge,
+                color = colorScheme.secondary
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (selectedCategory.isNotBlank()) {
+                    TextButton(
+                        onClick = onClearCategory,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = stringResource(id = R.string.action_clear_category),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = colorScheme.secondary
+                        )
+                    }
+                }
+                TextButton(
+                    onClick = onManageCategories,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = stringResource(id = R.string.action_manage_categories),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colorScheme.primary
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            item(key = "editor-cat-none") {
+                val isNoneSelected = selectedCategory.isBlank()
+                Surface(
+                    onClick = onClearCategory,
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isNoneSelected) colorScheme.primary else colorScheme.surface,
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = if (isNoneSelected) colorScheme.primary else colorScheme.outline
+                    )
+                ) {
+                    Text(
+                        text = stringResource(id = R.string.category_none_label),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (isNoneSelected) colorScheme.onPrimary else colorScheme.secondary,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                    )
+                }
+            }
+
+            items(
+                items = displayCategories,
+                key = { "editor-cat-${it.lowercase()}" }
+            ) { category ->
+                val isSelected = selectedCategory.trim().equals(category, ignoreCase = true)
+                Surface(
+                    onClick = { onSelectCategory(category) },
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isSelected) colorScheme.primary else colorScheme.surface,
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = if (isSelected) colorScheme.primary else colorScheme.outline
+                    )
+                ) {
+                    Text(
+                        text = category,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (isSelected) colorScheme.onPrimary else colorScheme.secondary,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CategoryManagementDialog(
+    state: CategoryManagerUiState,
+    categories: List<String>,
+    onNewCategoryInputChange: (String) -> Unit,
+    onCreateCategory: () -> Unit,
+    onStartRename: (String) -> Unit,
+    onRenameInputChange: (String) -> Unit,
+    onCancelRename: () -> Unit,
+    onConfirmRename: () -> Unit,
+    onRequestDelete: (String) -> Unit,
+    onDismissDeleteConfirmation: () -> Unit,
+    onConfirmDelete: () -> Unit,
+    onClose: () -> Unit
+) {
+    val colorScheme = MaterialTheme.colorScheme
+
+    if (state.categoryPendingDeletion != null) {
+        val pendingCategory = state.categoryPendingDeletion
+        DeleteConfirmationDialog(
+            title = stringResource(id = R.string.dialog_delete_category_title, pendingCategory),
+            message = stringResource(id = R.string.dialog_delete_category_message, pendingCategory),
+            onCancel = onDismissDeleteConfirmation,
+            onConfirmDelete = onConfirmDelete
+        )
+        return
+    }
+
+    AlertDialog(
+        onDismissRequest = onClose,
+        shape = RoundedCornerShape(20.dp),
+        containerColor = colorScheme.surface,
+        title = {
+            Column {
+                Text(
+                    text = stringResource(id = R.string.category_manager_title),
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = stringResource(id = R.string.category_manager_subtitle),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colorScheme.secondary
+                )
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = state.newCategoryInput,
+                        onValueChange = onNewCategoryInputChange,
+                        modifier = Modifier.weight(1f),
+                        placeholder = {
+                            Text(
+                                text = stringResource(id = R.string.category_new_placeholder),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = colorScheme.surface,
+                            unfocusedContainerColor = colorScheme.surface,
+                            focusedBorderColor = colorScheme.primary,
+                            unfocusedBorderColor = colorScheme.outline,
+                            cursorColor = colorScheme.primary,
+                            focusedTextColor = colorScheme.onSurface,
+                            unfocusedTextColor = colorScheme.onSurface
+                        )
+                    )
+
+                    Button(
+                        onClick = onCreateCategory,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = colorScheme.primary,
+                            contentColor = colorScheme.onPrimary
+                        )
+                    ) {
+                        Text(text = stringResource(id = R.string.action_add_category))
+                    }
+                }
+
+                if (state.validationError != null) {
+                    val errorRes = when (state.validationError) {
+                        CategoryOperationResult.InvalidName.Reason.EMPTY -> R.string.category_error_empty
+                        CategoryOperationResult.InvalidName.Reason.TOO_LONG -> R.string.category_error_too_long
+                        CategoryOperationResult.InvalidName.Reason.DUPLICATE -> R.string.category_error_duplicate
+                        CategoryOperationResult.InvalidName.Reason.RESERVED -> R.string.category_error_reserved
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        color = colorScheme.surfaceVariant,
+                        border = BorderStroke(1.dp, colorScheme.primary)
+                    ) {
+                        Text(
+                            text = stringResource(id = errorRes),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colorScheme.onSurface,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider(thickness = 1.dp, color = colorScheme.outline)
+                Spacer(modifier = Modifier.height(12.dp))
+
+                if (categories.isEmpty()) {
+                    Text(
+                        text = stringResource(id = R.string.category_empty_list),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colorScheme.secondary
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 260.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(items = categories, key = { it.lowercase() }) { category ->
+                            val isRenaming = state.renamingCategory?.equals(category, ignoreCase = true) == true
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                color = colorScheme.surface,
+                                border = BorderStroke(1.dp, colorScheme.outline)
+                            ) {
+                                if (isRenaming) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        OutlinedTextField(
+                                            value = state.renameInput,
+                                            onValueChange = onRenameInputChange,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            label = {
+                                                Text(text = stringResource(id = R.string.category_rename_label))
+                                            },
+                                            singleLine = true,
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                                        ) {
+                                            TextButton(onClick = onCancelRename) {
+                                                Text(
+                                                    text = stringResource(id = R.string.action_cancel),
+                                                    color = colorScheme.secondary
+                                                )
+                                            }
+                                            Button(
+                                                onClick = onConfirmRename,
+                                                shape = RoundedCornerShape(10.dp),
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = colorScheme.primary,
+                                                    contentColor = colorScheme.onPrimary
+                                                )
+                                            ) {
+                                                Text(text = stringResource(id = R.string.action_save))
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = category,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+
+                                        Row {
+                                            IconButton(onClick = { onStartRename(category) }) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Edit,
+                                                    contentDescription = stringResource(id = R.string.action_rename),
+                                                    tint = colorScheme.primary
+                                                )
+                                            }
+                                            IconButton(onClick = { onRequestDelete(category) }) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.DeleteOutline,
+                                                    contentDescription = stringResource(id = R.string.action_delete),
+                                                    tint = colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onClose) {
+                Text(
+                    text = stringResource(id = R.string.action_close),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colorScheme.primary
+                )
+            }
+        }
+    )
 }

@@ -168,6 +168,10 @@ fun HomeScreen(
                                     append(" · ")
                                 }
                                 append(stringResource(id = R.string.notes_title))
+                                if (note.category.isNotBlank()) {
+                                    append(" · ")
+                                    append(note.category)
+                                }
                                 append(" · ")
                                 append(formatEditorialTimestamp(note.updatedAt))
                             }

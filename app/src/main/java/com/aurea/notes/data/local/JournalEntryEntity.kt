@@ -8,7 +8,7 @@ import java.util.UUID
 /**
  * Room entity representing a user-created Journal Entry.
  * [title] is optional and may be blank; [createdAt] and [updatedAt] store epoch milliseconds;
- * [isPinned] defaults to false.
+ * [isPinned] defaults to false; [mood] is optional and defaults to "".
  */
 @Entity(tableName = "journal_entries")
 data class JournalEntryEntity(
@@ -29,5 +29,8 @@ data class JournalEntryEntity(
     val updatedAt: Long,
 
     @ColumnInfo(name = "is_pinned", defaultValue = "0")
-    val isPinned: Boolean = false
+    val isPinned: Boolean = false,
+
+    @ColumnInfo(name = "mood", defaultValue = "''")
+    val mood: String = ""
 )

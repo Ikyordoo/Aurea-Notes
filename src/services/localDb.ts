@@ -2,6 +2,26 @@ export type ContentFormat = 'PLAIN_TEXT' | 'RICH_TEXT';
 export type NoteSortOrder = 'LAST_MODIFIED' | 'CREATED_DATE' | 'TITLE_ASC';
 export type SearchScope = 'ALL' | 'NOTES' | 'JOURNAL';
 
+export type NoteCategoryFilter =
+  | { type: 'ALL' }
+  | { type: 'UNCATEGORIZED' }
+  | { type: 'CATEGORY'; name: string };
+
+export type CategoryValidationError =
+  | 'EMPTY'
+  | 'TOO_LONG'
+  | 'DUPLICATE'
+  | 'RESERVED';
+
+export const MAX_CATEGORY_NAME_LENGTH = 32;
+
+const RESERVED_CATEGORY_NAMES = new Set([
+  'all',
+  'all notes',
+  'uncategorized',
+  'none',
+]);
+
 export interface NoteRecord {
   id: string;
   title: string;
@@ -10,6 +30,7 @@ export interface NoteRecord {
   createdAt: number;
   updatedAt: number;
   isPinned: boolean;
+  category?: string;
 }
 
 export interface JournalEntryRecord {
@@ -19,6 +40,7 @@ export interface JournalEntryRecord {
   createdAt: number;
   updatedAt: number;
   isPinned: boolean;
+  mood?: string;
 }
 
 const DB_NAME = 'aurea_notes_journal_db';
@@ -28,6 +50,7 @@ const JOURNAL_STORE = 'journal_entries';
 
 const LS_NOTES_KEY = 'aurea_fallback_notes_v1';
 const LS_JOURNAL_KEY = 'aurea_fallback_journal_v1';
+const LS_CATEGORIES_KEY = 'aurea_note_categories_v1';
 
 function normalizeNoteRecord(raw: Partial<NoteRecord> & { id: string }): NoteRecord {
   return {
@@ -38,6 +61,7 @@ function normalizeNoteRecord(raw: Partial<NoteRecord> & { id: string }): NoteRec
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now(),
     isPinned: Boolean(raw.isPinned),
+    category: typeof raw.category === 'string' ? raw.category.trim() : '',
   };
 }
 
@@ -51,7 +75,90 @@ function normalizeJournalRecord(
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now(),
     isPinned: Boolean(raw.isPinned),
+    mood: typeof raw.mood === 'string' ? raw.mood : '',
   };
+}
+
+export function validateCategoryName(
+  candidate: string,
+  existingCategories: string[],
+  ignoringCurrentName?: string
+): CategoryValidationError | null {
+  const trimmed = candidate.trim();
+  if (!trimmed) {
+    return 'EMPTY';
+  }
+  if (trimmed.length > MAX_CATEGORY_NAME_LENGTH) {
+    return 'TOO_LONG';
+  }
+  if (RESERVED_CATEGORY_NAMES.has(trimmed.toLowerCase())) {
+    return 'RESERVED';
+  }
+  const isDuplicate = existingCategories.some((existing) => {
+    const existingTrimmed = existing.trim();
+    const isIgnored =
+      ignoringCurrentName !== undefined &&
+      existingTrimmed.toLowerCase() === ignoringCurrentName.trim().toLowerCase();
+    return (
+      !isIgnored && existingTrimmed.toLowerCase() === trimmed.toLowerCase()
+    );
+  });
+  if (isDuplicate) {
+    return 'DUPLICATE';
+  }
+  return null;
+}
+
+export function getStoredCategoryNames(): string[] {
+  try {
+    const raw = localStorage.getItem(LS_CATEGORIES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function saveStoredCategoryNames(names: string[]): void {
+  try {
+    const deduplicated = mergeCategoryNameLists(names, []);
+    localStorage.setItem(LS_CATEGORIES_KEY, JSON.stringify(deduplicated));
+  } catch {
+    // Ignore storage quota errors in fallback environments
+  }
+}
+
+export function mergeCategoryNameLists(
+  storedCategories: string[],
+  noteCategories: string[]
+): string[] {
+  const byLower = new Map<string, string>();
+  for (const raw of [...storedCategories, ...noteCategories]) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (!byLower.has(key)) {
+      byLower.set(key, trimmed);
+    }
+  }
+  return Array.from(byLower.values()).sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: 'base' })
+  );
+}
+
+export function mergeAvailableCategories(
+  storedCategories: string[],
+  notes: NoteRecord[]
+): string[] {
+  return mergeCategoryNameLists(
+    storedCategories,
+    notes.map((n) => n.category ?? '')
+  );
 }
 
 export function sortNotesList(
@@ -73,6 +180,24 @@ export function sortNotesList(
     }
     return b.updatedAt - a.updatedAt;
   });
+}
+
+export function filterAndSortNotes(
+  notes: NoteRecord[],
+  filter: NoteCategoryFilter = { type: 'ALL' },
+  sortOrder: NoteSortOrder = 'LAST_MODIFIED'
+): NoteRecord[] {
+  const filtered = notes.filter((note) => {
+    const noteCategory = (note.category ?? '').trim();
+    if (filter.type === 'ALL') {
+      return true;
+    }
+    if (filter.type === 'UNCATEGORIZED') {
+      return noteCategory.length === 0;
+    }
+    return noteCategory.toLowerCase() === filter.name.trim().toLowerCase();
+  });
+  return sortNotesList(filtered, sortOrder);
 }
 
 export function sortJournalEntriesList(
@@ -142,6 +267,10 @@ export async function getAllNotes(
 
 export async function saveNoteRecord(note: NoteRecord): Promise<void> {
   const normalized = normalizeNoteRecord(note);
+  if (normalized.category && normalized.category.trim().length > 0) {
+    const currentStored = getStoredCategoryNames();
+    saveStoredCategoryNames([...currentStored, normalized.category.trim()]);
+  }
   try {
     const db = await openDatabase();
     await new Promise<void>((resolve, reject) => {
@@ -172,6 +301,95 @@ export async function setNotePinnedRecord(
     ...target,
     isPinned,
   });
+}
+
+export async function setNoteCategoryRecord(
+  id: string,
+  category: string
+): Promise<void> {
+  const existing = await getAllNotes();
+  const target = existing.find((n) => n.id === id);
+  if (!target) return;
+  await saveNoteRecord({
+    ...target,
+    category: category.trim(),
+  });
+}
+
+export async function createNoteCategoryRecord(
+  name: string,
+  existingCategories: string[]
+): Promise<
+  | { ok: true; category: string }
+  | { ok: false; error: CategoryValidationError }
+> {
+  const validationError = validateCategoryName(name, existingCategories);
+  if (validationError) {
+    return { ok: false, error: validationError };
+  }
+  const trimmed = name.trim();
+  const stored = getStoredCategoryNames();
+  saveStoredCategoryNames([...stored, trimmed]);
+  return { ok: true, category: trimmed };
+}
+
+export async function renameNoteCategoryRecord(
+  oldName: string,
+  newName: string,
+  existingCategories: string[]
+): Promise<
+  | { ok: true; category: string }
+  | { ok: false; error: CategoryValidationError }
+> {
+  const trimmedOld = oldName.trim();
+  const trimmedNew = newName.trim();
+  const validationError = validateCategoryName(
+    trimmedNew,
+    existingCategories,
+    trimmedOld
+  );
+  if (validationError) {
+    return { ok: false, error: validationError };
+  }
+
+  const stored = getStoredCategoryNames().filter(
+    (c) => c.trim().toLowerCase() !== trimmedOld.toLowerCase()
+  );
+  saveStoredCategoryNames([...stored, trimmedNew]);
+
+  const notes = await getAllNotes();
+  const affectedNotes = notes.filter(
+    (n) => (n.category ?? '').trim().toLowerCase() === trimmedOld.toLowerCase()
+  );
+  for (const note of affectedNotes) {
+    await saveNoteRecord({
+      ...note,
+      category: trimmedNew,
+    });
+  }
+
+  return { ok: true, category: trimmedNew };
+}
+
+export async function deleteNoteCategoryRecord(name: string): Promise<void> {
+  const trimmed = name.trim();
+  if (!trimmed) return;
+
+  const stored = getStoredCategoryNames().filter(
+    (c) => c.trim().toLowerCase() !== trimmed.toLowerCase()
+  );
+  saveStoredCategoryNames(stored);
+
+  const notes = await getAllNotes();
+  const affectedNotes = notes.filter(
+    (n) => (n.category ?? '').trim().toLowerCase() === trimmed.toLowerCase()
+  );
+  for (const note of affectedNotes) {
+    await saveNoteRecord({
+      ...note,
+      category: '',
+    });
+  }
 }
 
 export async function deleteNoteRecord(id: string): Promise<void> {
@@ -249,6 +467,19 @@ export async function setJournalEntryPinnedRecord(
   await saveJournalEntryRecord({
     ...target,
     isPinned,
+  });
+}
+
+export async function setJournalEntryMoodRecord(
+  id: string,
+  mood: string
+): Promise<void> {
+  const existing = await getAllJournalEntries();
+  const target = existing.find((e) => e.id === id);
+  if (!target) return;
+  await saveJournalEntryRecord({
+    ...target,
+    mood: mood.trim(),
   });
 }
 

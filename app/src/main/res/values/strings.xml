@@ -44,6 +44,32 @@
     <string name="note_validation_error">Please enter a title and note content before saving.</string>
     <string name="note_last_modified">Modified %1$s</string>
 
+    <!-- Note Categories & Filtering -->
+    <string name="category_filter_all">All notes</string>
+    <string name="category_filter_uncategorized">Uncategorized</string>
+    <string name="category_none_label">None (Uncategorized)</string>
+    <string name="note_category_label">Category (Optional)</string>
+    <string name="action_manage_categories">Categories</string>
+    <string name="action_add_category">Add</string>
+    <string name="action_rename">Rename</string>
+    <string name="action_clear_category">Clear</string>
+    <string name="action_close">Done</string>
+    <string name="notes_empty_category_title">No notes in “%1$s”.</string>
+    <string name="notes_empty_category_description">Assign this category to a note or switch back to All notes.</string>
+    <string name="notes_empty_uncategorized_title">No uncategorized notes.</string>
+    <string name="notes_empty_uncategorized_description">Every saved note currently belongs to a category.</string>
+    <string name="category_manager_title">Manage Categories</string>
+    <string name="category_manager_subtitle">Create, rename, or remove categories for your notes library.</string>
+    <string name="category_new_placeholder">New category name…</string>
+    <string name="category_rename_label">Rename category</string>
+    <string name="category_empty_list">No custom categories yet. Add one above to organize your notes.</string>
+    <string name="dialog_delete_category_title">Remove category “%1$s”?</string>
+    <string name="dialog_delete_category_message">Notes in “%1$s” will not be deleted. They will become Uncategorized and keep their content, timestamps, and pin state.</string>
+    <string name="category_error_empty">Please enter a category name.</string>
+    <string name="category_error_too_long">Category names must be 32 characters or fewer.</string>
+    <string name="category_error_duplicate">A category with this name already exists.</string>
+    <string name="category_error_reserved">That name is reserved for built-in note filters.</string>
+
     <!-- Journal Screen & Editor -->
     <string name="journal_title">Journal</string>
     <string name="journal_subtitle">Unhurried pages for daily reflection.</string>
@@ -77,7 +103,7 @@
     <!-- Search Screen -->
     <string name="search_title">Search</string>
     <string name="search_subtitle">Find notes and journal entries.</string>
-    <string name="search_placeholder">Search titles, passages, or dates...</string>
+    <string name="search_placeholder">Search titles, passages, categories, or dates...</string>
     <string name="search_scope_all">All</string>
     <string name="search_scope_notes">Notes</string>
     <string name="search_scope_journal">Journal</string>

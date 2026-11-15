@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -39,6 +40,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aurea.notes.R
 import com.aurea.notes.data.local.JournalEntryEntity
 import com.aurea.notes.data.local.NoteEntity
+import com.aurea.notes.data.repository.NoteCategoryFilter
 import com.aurea.notes.ui.components.formatEditorialTimestamp
 import com.aurea.notes.ui.theme.EspressoDisabled
 import com.aurea.notes.ui.viewmodels.SearchScope
@@ -129,6 +131,15 @@ fun SearchScreen(
             onSelectScope = viewModel::onScopeChange
         )
 
+        if (uiState.scope != SearchScope.JOURNAL && uiState.availableCategories.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(10.dp))
+            SearchCategoryFilterBar(
+                selectedFilter = uiState.categoryFilter,
+                categories = uiState.availableCategories,
+                onSelectFilter = viewModel::onCategoryFilterChange
+            )
+        }
+
         Spacer(modifier = Modifier.height(20.dp))
         HorizontalDivider(thickness = 1.dp, color = colorScheme.outline)
         Spacer(modifier = Modifier.height(20.dp))
@@ -157,6 +168,10 @@ fun SearchScreen(
                             append(" · ")
                         }
                         append(stringResource(id = R.string.notes_title))
+                        if (note.category.isNotBlank()) {
+                            append(" · ")
+                            append(note.category)
+                        }
                         append(" · ")
                         append(formatEditorialTimestamp(note.updatedAt))
                     }
@@ -282,6 +297,66 @@ private fun SearchScopeSelector(
                         style = MaterialTheme.typography.labelMedium
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchCategoryFilterBar(
+    selectedFilter: NoteCategoryFilter,
+    categories: List<String>,
+    onSelectFilter: (NoteCategoryFilter) -> Unit
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val allNotesLabel = stringResource(id = R.string.category_filter_all)
+    val uncategorizedLabel = stringResource(id = R.string.category_filter_uncategorized)
+
+    val filterItems: List<Pair<NoteCategoryFilter, String>> = buildList {
+        add(NoteCategoryFilter.All to allNotesLabel)
+        add(NoteCategoryFilter.Uncategorized to uncategorizedLabel)
+        categories.forEach { category ->
+            add(NoteCategoryFilter.Category(category) to category)
+        }
+    }
+
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        items(
+            items = filterItems,
+            key = { (filter, _) ->
+                when (filter) {
+                    NoteCategoryFilter.All -> "search-filter-all"
+                    NoteCategoryFilter.Uncategorized -> "search-filter-uncategorized"
+                    is NoteCategoryFilter.Category -> "search-filter-cat-${filter.name.lowercase()}"
+                }
+            }
+        ) { (filter, label) ->
+            val isSelected = when {
+                selectedFilter is NoteCategoryFilter.All && filter is NoteCategoryFilter.All -> true
+                selectedFilter is NoteCategoryFilter.Uncategorized && filter is NoteCategoryFilter.Uncategorized -> true
+                selectedFilter is NoteCategoryFilter.Category && filter is NoteCategoryFilter.Category ->
+                    selectedFilter.name.equals(filter.name, ignoreCase = true)
+                else -> false
+            }
+
+            Surface(
+                onClick = { onSelectFilter(filter) },
+                shape = RoundedCornerShape(10.dp),
+                color = if (isSelected) colorScheme.primary else colorScheme.surface,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (isSelected) colorScheme.primary else colorScheme.outline
+                )
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isSelected) colorScheme.onPrimary else colorScheme.secondary,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                )
             }
         }
     }

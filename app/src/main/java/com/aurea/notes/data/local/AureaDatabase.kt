@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         NoteEntity::class,
         JournalEntryEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AureaDatabase : RoomDatabase() {
@@ -41,6 +41,21 @@ abstract class AureaDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Explicit non-destructive migration from version 2 to version 3.
+         * Adds category column to notes and mood column to journal_entries with empty-string default.
+         */
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE notes ADD COLUMN category TEXT NOT NULL DEFAULT ''"
+                )
+                db.execSQL(
+                    "ALTER TABLE journal_entries ADD COLUMN mood TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: AureaDatabase? = null
 
@@ -51,7 +66,7 @@ abstract class AureaDatabase : RoomDatabase() {
                     AureaDatabase::class.java,
                     DATABASE_NAME
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { INSTANCE = it }
             }

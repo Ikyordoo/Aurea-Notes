@@ -19,6 +19,7 @@ interface JournalEntryDao {
         SELECT * FROM journal_entries
         WHERE title LIKE '%' || :query || '%'
            OR content LIKE '%' || :query || '%'
+           OR mood LIKE '%' || :query || '%'
         ORDER BY is_pinned DESC, created_at DESC
         """
     )
@@ -29,6 +30,9 @@ interface JournalEntryDao {
 
     @Query("UPDATE journal_entries SET is_pinned = :isPinned WHERE id = :id")
     suspend fun setEntryPinned(id: String, isPinned: Boolean)
+
+    @Query("UPDATE journal_entries SET mood = :mood WHERE id = :id")
+    suspend fun setEntryMood(id: String, mood: String)
 
     @Delete
     suspend fun deleteEntry(entry: JournalEntryEntity)

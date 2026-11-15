@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.aurea.notes.data.local.JournalEntryEntity
 import com.aurea.notes.data.local.NoteEntity
 import com.aurea.notes.data.repository.JournalRepository
+import com.aurea.notes.data.repository.NoteCategoryFilter
 import com.aurea.notes.data.repository.NotesRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
@@ -29,6 +30,8 @@ enum class SearchScope {
 data class SearchUiState(
     val query: String = "",
     val scope: SearchScope = SearchScope.ALL,
+    val categoryFilter: NoteCategoryFilter = NoteCategoryFilter.All,
+    val availableCategories: List<String> = emptyList(),
     val matchingNotes: List<NoteEntity> = emptyList(),
     val matchingJournalEntries: List<JournalEntryEntity> = emptyList()
 ) {
@@ -52,13 +55,16 @@ class SearchViewModel(
     private val _scope = MutableStateFlow(SearchScope.ALL)
     val scope: StateFlow<SearchScope> = _scope.asStateFlow()
 
+    private val _categoryFilter = MutableStateFlow<NoteCategoryFilter>(NoteCategoryFilter.All)
+    val categoryFilter: StateFlow<NoteCategoryFilter> = _categoryFilter.asStateFlow()
+
     private val debouncedTrimmedQuery = _query
         .map { it.trim() }
         .debounce { trimmed ->
             if (trimmed.isEmpty()) 0L else debounceMillis
         }
 
-    private val searchResultsFlow = combine(
+    private val rawSearchResultsFlow = combine(
         debouncedTrimmedQuery,
         _scope
     ) { trimmedQuery, currentScope ->
@@ -87,12 +93,38 @@ class SearchViewModel(
     val uiState: StateFlow<SearchUiState> = combine(
         _query,
         _scope,
-        searchResultsFlow
-    ) { rawQuery, currentScope, (notes, entries) ->
+        _categoryFilter,
+        notesRepository.observeCategories(),
+        rawSearchResultsFlow
+    ) { rawQuery, currentScope, activeCategoryFilter, categories, (notes, entries) ->
+        val effectiveFilter = when (activeCategoryFilter) {
+            is NoteCategoryFilter.Category -> {
+                val matched = categories.find {
+                    it.equals(activeCategoryFilter.name, ignoreCase = true)
+                }
+                if (matched != null) {
+                    NoteCategoryFilter.Category(matched)
+                } else {
+                    activeCategoryFilter
+                }
+            }
+            else -> activeCategoryFilter
+        }
+
+        val filteredNotes = when (effectiveFilter) {
+            is NoteCategoryFilter.All -> notes
+            is NoteCategoryFilter.Uncategorized -> notes.filter { it.category.trim().isEmpty() }
+            is NoteCategoryFilter.Category -> notes.filter {
+                it.category.trim().equals(effectiveFilter.name.trim(), ignoreCase = true)
+            }
+        }
+
         SearchUiState(
             query = rawQuery,
             scope = currentScope,
-            matchingNotes = notes,
+            categoryFilter = effectiveFilter,
+            availableCategories = categories,
+            matchingNotes = filteredNotes,
             matchingJournalEntries = entries
         )
     }.stateIn(
@@ -107,6 +139,10 @@ class SearchViewModel(
 
     fun onScopeChange(newScope: SearchScope) {
         _scope.value = newScope
+    }
+
+    fun onCategoryFilterChange(filter: NoteCategoryFilter) {
+        _categoryFilter.value = filter
     }
 
     fun clearQuery() {

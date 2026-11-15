@@ -27,49 +27,49 @@ export const KOTLIN_SOURCE_FILES: KotlinSourceFile[] = [
   {
     path: 'app/src/main/java/com/aurea/notes/data/local/AureaDatabase.kt',
     title: 'AureaDatabase.kt',
-    description: 'Room v2 database with explicit non-destructive MIGRATION_1_2.',
+    description: 'Room v3 database with explicit non-destructive MIGRATION_1_2 and MIGRATION_2_3.',
     code: aureaDatabaseRaw,
   },
   {
     path: 'app/src/main/java/com/aurea/notes/data/local/NoteEntity.kt',
     title: 'NoteEntity.kt',
-    description: 'Room entity for Notes with isPinned and rich-text format readiness.',
+    description: 'Room entity for Notes with category, isPinned, and rich-text format readiness.',
     code: noteEntityRaw,
   },
   {
     path: 'app/src/main/java/com/aurea/notes/data/local/JournalEntryEntity.kt',
     title: 'JournalEntryEntity.kt',
-    description: 'Room entity for Journal entries with optional title, timestamps, and isPinned.',
+    description: 'Room entity for Journal entries with optional title, mood, timestamps, and isPinned.',
     code: journalEntryEntityRaw,
   },
   {
     path: 'app/src/main/java/com/aurea/notes/data/local/NoteDao.kt',
     title: 'NoteDao.kt',
-    description: 'Room DAO for Notes with pinned-first ordering and sort queries.',
+    description: 'Room DAO for Notes with pinned-first ordering, sort queries, uncategorized queries, and category rename/clear operations.',
     code: noteDaoRaw,
   },
   {
     path: 'app/src/main/java/com/aurea/notes/data/local/JournalEntryDao.kt',
     title: 'JournalEntryDao.kt',
-    description: 'Room DAO for chronological pinned-first Journal entries.',
+    description: 'Room DAO for chronological pinned-first Journal entries and mood search.',
     code: journalEntryDaoRaw,
   },
   {
     path: 'app/src/main/java/com/aurea/notes/data/repository/NotesRepository.kt',
     title: 'NotesRepository.kt',
-    description: 'Offline-first Notes repository with NoteSortOrder and pinning.',
+    description: 'Offline-first Notes repository with NoteSortOrder, NoteCategoryFilter, persistent category management, and pinning.',
     code: notesRepositoryRaw,
   },
   {
     path: 'app/src/main/java/com/aurea/notes/data/repository/JournalRepository.kt',
     title: 'JournalRepository.kt',
-    description: 'Offline-first Journal repository with pinning.',
+    description: 'Offline-first Journal repository with pinning and mood support.',
     code: journalRepositoryRaw,
   },
   {
     path: 'app/src/main/java/com/aurea/notes/ui/viewmodels/NotesViewModel.kt',
     title: 'NotesViewModel.kt',
-    description: 'MVVM state management for Notes list, sorting, pinning, and editor.',
+    description: 'MVVM state management for Notes list, category filtering, category CRUD, sorting, pinning, and editor.',
     code: notesViewModelRaw,
   },
   {
@@ -81,13 +81,13 @@ export const KOTLIN_SOURCE_FILES: KotlinSourceFile[] = [
   {
     path: 'app/src/main/java/com/aurea/notes/ui/viewmodels/SearchViewModel.kt',
     title: 'SearchViewModel.kt',
-    description: 'Repository-backed debounced search with ALL/NOTES/JOURNAL scopes.',
+    description: 'Repository-backed debounced search with ALL/NOTES/JOURNAL scopes and NoteCategoryFilter.',
     code: searchViewModelRaw,
   },
   {
     path: 'app/src/main/java/com/aurea/notes/ui/screens/NotesScreen.kt',
     title: 'NotesScreen.kt',
-    description: 'Notes list, sort selector, pin controls, and Note editor.',
+    description: 'Notes list, category filter bar, category management dialog, sort selector, pin controls, and Note editor.',
     code: notesScreenRaw,
   },
   {
@@ -99,7 +99,7 @@ export const KOTLIN_SOURCE_FILES: KotlinSourceFile[] = [
   {
     path: 'app/src/main/java/com/aurea/notes/ui/screens/SearchScreen.kt',
     title: 'SearchScreen.kt',
-    description: 'Repository-backed search with scope filtering and clear action.',
+    description: 'Repository-backed search with scope filtering, category filtering, and clear action.',
     code: searchScreenRaw,
   },
   {

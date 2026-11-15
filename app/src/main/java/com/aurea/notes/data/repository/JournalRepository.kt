@@ -10,6 +10,7 @@ interface JournalRepository {
     suspend fun getEntryById(id: String): JournalEntryEntity?
     suspend fun saveEntry(entry: JournalEntryEntity)
     suspend fun setEntryPinned(id: String, isPinned: Boolean)
+    suspend fun setEntryMood(id: String, mood: String)
     suspend fun deleteEntryById(id: String)
 }
 
@@ -31,6 +32,10 @@ class OfflineJournalRepository(
 
     override suspend fun setEntryPinned(id: String, isPinned: Boolean) {
         journalEntryDao.setEntryPinned(id, isPinned)
+    }
+
+    override suspend fun setEntryMood(id: String, mood: String) {
+        journalEntryDao.setEntryMood(id, mood.trim())
     }
 
     override suspend fun deleteEntryById(id: String) {

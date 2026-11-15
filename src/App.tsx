@@ -12,22 +12,32 @@ import {
   FileText,
   Home,
   Moon,
+  Pencil,
   Plus,
   Search,
   Sun,
+  Tag,
   Trash2,
   X,
 } from 'lucide-react';
 import {
+  CategoryValidationError,
   ContentFormat,
+  createNoteCategoryRecord,
   deleteJournalEntryRecord,
+  deleteNoteCategoryRecord,
   deleteNoteRecord,
+  filterAndSortNotes,
   formatEditorialTimestamp,
   getAllJournalEntries,
   getAllNotes,
+  getStoredCategoryNames,
   JournalEntryRecord,
+  mergeAvailableCategories,
+  NoteCategoryFilter,
   NoteRecord,
   NoteSortOrder,
+  renameNoteCategoryRecord,
   saveJournalEntryRecord,
   saveNoteRecord,
   SearchScope,
@@ -46,9 +56,11 @@ interface NoteEditorState {
   content: string;
   contentFormat: ContentFormat;
   isPinned: boolean;
+  category: string;
   originalTitle: string;
   originalContent: string;
   originalIsPinned: boolean;
+  originalCategory: string;
   createdAt: number;
   updatedAt: number;
   showValidationError: boolean;
@@ -67,6 +79,15 @@ interface JournalEditorState {
   createdAt: number;
   updatedAt: number;
   showValidationError: boolean;
+}
+
+interface CategoryManagerState {
+  isOpen: boolean;
+  newCategoryInput: string;
+  renamingCategory: string | null;
+  renameInput: string;
+  validationError: CategoryValidationError | null;
+  categoryPendingDeletion: string | null;
 }
 
 type HomeHighlight =
@@ -93,9 +114,11 @@ const CLOSED_NOTE_EDITOR: NoteEditorState = {
   content: '',
   contentFormat: 'PLAIN_TEXT',
   isPinned: false,
+  category: '',
   originalTitle: '',
   originalContent: '',
   originalIsPinned: false,
+  originalCategory: '',
   createdAt: 0,
   updatedAt: 0,
   showValidationError: false,
@@ -116,6 +139,15 @@ const CLOSED_JOURNAL_EDITOR: JournalEditorState = {
   showValidationError: false,
 };
 
+const CLOSED_CATEGORY_MANAGER: CategoryManagerState = {
+  isOpen: false,
+  newCategoryInput: '',
+  renamingCategory: null,
+  renameInput: '',
+  validationError: null,
+  categoryPendingDeletion: null,
+};
+
 function createUniqueId(prefix: string): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return `${prefix}-${crypto.randomUUID()}`;
@@ -123,18 +155,50 @@ function createUniqueId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function getCategoryValidationErrorMessage(
+  error: CategoryValidationError | null
+): string | null {
+  if (!error) return null;
+  switch (error) {
+    case 'EMPTY':
+      return 'Please enter a category name.';
+    case 'TOO_LONG':
+      return 'Category names must be 32 characters or fewer.';
+    case 'DUPLICATE':
+      return 'A category with this name already exists.';
+    case 'RESERVED':
+      return 'That name is reserved for built-in note filters.';
+  }
+}
+
+function isSameCategoryFilter(
+  a: NoteCategoryFilter,
+  b: NoteCategoryFilter
+): boolean {
+  if (a.type !== b.type) return false;
+  if (a.type === 'CATEGORY' && b.type === 'CATEGORY') {
+    return a.name.trim().toLowerCase() === b.name.trim().toLowerCase();
+  }
+  return true;
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<Destination>('home');
   const [rawNotes, setRawNotes] = useState<NoteRecord[]>([]);
+  const [storedCategories, setStoredCategories] = useState<string[]>([]);
   const [journalEntries, setJournalEntries] = useState<JournalEntryRecord[]>([]);
   const [noteSortOrder, setNoteSortOrder] =
     useState<NoteSortOrder>('LAST_MODIFIED');
+  const [noteCategoryFilter, setNoteCategoryFilter] =
+    useState<NoteCategoryFilter>({ type: 'ALL' });
   const [isLoaded, setIsLoaded] = useState(false);
 
   const [noteEditor, setNoteEditor] =
     useState<NoteEditorState>(CLOSED_NOTE_EDITOR);
   const [journalEditor, setJournalEditor] =
     useState<JournalEditorState>(CLOSED_JOURNAL_EDITOR);
+  const [categoryManager, setCategoryManager] =
+    useState<CategoryManagerState>(CLOSED_CATEGORY_MANAGER);
 
   const [pendingCancelTarget, setPendingCancelTarget] = useState<
     | { type: 'close-note' }
@@ -151,6 +215,9 @@ export default function App() {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchScope, setSearchScope] = useState<SearchScope>('ALL');
+  const [searchCategoryFilter, setSearchCategoryFilter] =
+    useState<NoteCategoryFilter>({ type: 'ALL' });
+
   const [isDark, setIsDark] = useState<boolean>(() => {
     if (typeof window !== 'undefined' && window.matchMedia) {
       return window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -173,6 +240,7 @@ export default function App() {
       getAllJournalEntries(),
     ]);
     setRawNotes(loadedNotes);
+    setStoredCategories(getStoredCategoryNames());
     setJournalEntries(loadedJournal);
     setIsLoaded(true);
   }, []);
@@ -181,13 +249,19 @@ export default function App() {
     reloadRecords();
   }, [reloadRecords]);
 
-  // Sorted notes (Pinned first, then selected NoteSortOrder)
-  const notes = useMemo(
-    () => sortNotesList(rawNotes, noteSortOrder),
-    [rawNotes, noteSortOrder]
+  // Available categories merged from persistent category store and notes
+  const categories = useMemo(
+    () => mergeAvailableCategories(storedCategories, rawNotes),
+    [storedCategories, rawNotes]
   );
 
-  // Home Pinned & Recent (Up to 3 relevant user-created items, pinned first, then most recent, zero duplicates)
+  // Filtered and sorted notes (Pinned first, then selected NoteSortOrder within active category filter)
+  const notes = useMemo(
+    () => filterAndSortNotes(rawNotes, noteCategoryFilter, noteSortOrder),
+    [rawNotes, noteCategoryFilter, noteSortOrder]
+  );
+
+  // Home Pinned & Recent (Up to 3 relevant user-created items across all notes & journal entries)
   const homeHighlights = useMemo<HomeHighlight[]>(() => {
     const items: HomeHighlight[] = [
       ...rawNotes.map(
@@ -225,7 +299,8 @@ export default function App() {
     noteEditor.isOpen &&
     (noteEditor.title.trim() !== noteEditor.originalTitle.trim() ||
       noteEditor.content.trim() !== noteEditor.originalContent.trim() ||
-      noteEditor.isPinned !== noteEditor.originalIsPinned);
+      noteEditor.isPinned !== noteEditor.originalIsPinned ||
+      noteEditor.category.trim() !== noteEditor.originalCategory.trim());
 
   const journalHasUnsavedChanges =
     activeTab === 'journal' &&
@@ -257,6 +332,8 @@ export default function App() {
   // Notes actions
   const startNewNote = () => {
     const now = Date.now();
+    const defaultCategory =
+      noteCategoryFilter.type === 'CATEGORY' ? noteCategoryFilter.name : '';
     setNoteEditor({
       isOpen: true,
       isEditingExisting: false,
@@ -265,9 +342,11 @@ export default function App() {
       content: '',
       contentFormat: 'PLAIN_TEXT',
       isPinned: false,
+      category: defaultCategory,
       originalTitle: '',
       originalContent: '',
       originalIsPinned: false,
+      originalCategory: defaultCategory,
       createdAt: now,
       updatedAt: now,
       showValidationError: false,
@@ -276,6 +355,7 @@ export default function App() {
   };
 
   const openExistingNote = (note: NoteRecord) => {
+    const cleanCategory = (note.category ?? '').trim();
     setNoteEditor({
       isOpen: true,
       isEditingExisting: true,
@@ -284,9 +364,11 @@ export default function App() {
       content: note.content,
       contentFormat: note.contentFormat || 'PLAIN_TEXT',
       isPinned: Boolean(note.isPinned),
+      category: cleanCategory,
       originalTitle: note.title,
       originalContent: note.content,
       originalIsPinned: Boolean(note.isPinned),
+      originalCategory: cleanCategory,
       createdAt: note.createdAt,
       updatedAt: note.updatedAt,
       showValidationError: false,
@@ -307,6 +389,7 @@ export default function App() {
     e.preventDefault();
     const trimmedTitle = noteEditor.title.trim();
     const trimmedContent = noteEditor.content.trim();
+    const trimmedCategory = noteEditor.category.trim();
 
     if (!trimmedTitle || !trimmedContent) {
       setNoteEditor((prev) => ({ ...prev, showValidationError: true }));
@@ -320,6 +403,7 @@ export default function App() {
       content: trimmedContent,
       contentFormat: noteEditor.contentFormat,
       isPinned: noteEditor.isPinned,
+      category: trimmedCategory,
       createdAt:
         noteEditor.isEditingExisting && noteEditor.createdAt > 0
           ? noteEditor.createdAt
@@ -338,6 +422,168 @@ export default function App() {
     } else {
       setNoteEditor(CLOSED_NOTE_EDITOR);
     }
+  };
+
+  // Category Management actions
+  const openCategoryManager = () => {
+    setCategoryManager({
+      isOpen: true,
+      newCategoryInput: '',
+      renamingCategory: null,
+      renameInput: '',
+      validationError: null,
+      categoryPendingDeletion: null,
+    });
+  };
+
+  const closeCategoryManager = () => {
+    setCategoryManager(CLOSED_CATEGORY_MANAGER);
+  };
+
+  const handleCreateCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const result = await createNoteCategoryRecord(
+      categoryManager.newCategoryInput,
+      categories
+    );
+    if (!result.ok) {
+      setCategoryManager((prev) => ({
+        ...prev,
+        validationError: result.error,
+      }));
+      return;
+    }
+    await reloadRecords();
+    setCategoryManager((prev) => ({
+      ...prev,
+      newCategoryInput: '',
+      validationError: null,
+    }));
+  };
+
+  const startRenamingCategory = (categoryName: string) => {
+    setCategoryManager((prev) => ({
+      ...prev,
+      renamingCategory: categoryName,
+      renameInput: categoryName,
+      validationError: null,
+    }));
+  };
+
+  const cancelRenamingCategory = () => {
+    setCategoryManager((prev) => ({
+      ...prev,
+      renamingCategory: null,
+      renameInput: '',
+      validationError: null,
+    }));
+  };
+
+  const handleConfirmRenameCategory = async () => {
+    const oldName = categoryManager.renamingCategory;
+    if (!oldName) return;
+    const result = await renameNoteCategoryRecord(
+      oldName,
+      categoryManager.renameInput,
+      categories
+    );
+    if (!result.ok) {
+      setCategoryManager((prev) => ({
+        ...prev,
+        validationError: result.error,
+      }));
+      return;
+    }
+    const newName = result.category;
+    if (
+      noteCategoryFilter.type === 'CATEGORY' &&
+      noteCategoryFilter.name.toLowerCase() === oldName.toLowerCase()
+    ) {
+      setNoteCategoryFilter({ type: 'CATEGORY', name: newName });
+    }
+    if (
+      searchCategoryFilter.type === 'CATEGORY' &&
+      searchCategoryFilter.name.toLowerCase() === oldName.toLowerCase()
+    ) {
+      setSearchCategoryFilter({ type: 'CATEGORY', name: newName });
+    }
+    if (noteEditor.isOpen) {
+      setNoteEditor((prev) => ({
+        ...prev,
+        category:
+          prev.category.trim().toLowerCase() === oldName.toLowerCase()
+            ? newName
+            : prev.category,
+        originalCategory:
+          prev.originalCategory.trim().toLowerCase() === oldName.toLowerCase()
+            ? newName
+            : prev.originalCategory,
+      }));
+    }
+    await reloadRecords();
+    setCategoryManager((prev) => ({
+      ...prev,
+      renamingCategory: null,
+      renameInput: '',
+      validationError: null,
+    }));
+  };
+
+  const requestDeleteCategory = (categoryName: string) => {
+    setCategoryManager((prev) => ({
+      ...prev,
+      categoryPendingDeletion: categoryName,
+      validationError: null,
+    }));
+  };
+
+  const dismissDeleteCategoryConfirmation = () => {
+    setCategoryManager((prev) => ({
+      ...prev,
+      categoryPendingDeletion: null,
+    }));
+  };
+
+  const confirmDeleteCategory = async () => {
+    const targetCategory = categoryManager.categoryPendingDeletion;
+    if (!targetCategory) return;
+    await deleteNoteCategoryRecord(targetCategory);
+
+    if (
+      noteCategoryFilter.type === 'CATEGORY' &&
+      noteCategoryFilter.name.toLowerCase() === targetCategory.toLowerCase()
+    ) {
+      setNoteCategoryFilter({ type: 'ALL' });
+    }
+    if (
+      searchCategoryFilter.type === 'CATEGORY' &&
+      searchCategoryFilter.name.toLowerCase() === targetCategory.toLowerCase()
+    ) {
+      setSearchCategoryFilter({ type: 'ALL' });
+    }
+    if (noteEditor.isOpen) {
+      setNoteEditor((prev) => ({
+        ...prev,
+        category:
+          prev.category.trim().toLowerCase() === targetCategory.toLowerCase()
+            ? ''
+            : prev.category,
+        originalCategory:
+          prev.originalCategory.trim().toLowerCase() ===
+          targetCategory.toLowerCase()
+            ? ''
+            : prev.originalCategory,
+      }));
+    }
+    await reloadRecords();
+    setCategoryManager((prev) => ({
+      ...prev,
+      categoryPendingDeletion: null,
+      renamingCategory:
+        prev.renamingCategory?.toLowerCase() === targetCategory.toLowerCase()
+          ? null
+          : prev.renamingCategory,
+    }));
   };
 
   // Journal actions
@@ -447,28 +693,84 @@ export default function App() {
     await reloadRecords();
   };
 
-  // Scoped Search filtering (ALL / NOTES / JOURNAL)
+  // Scoped Search filtering (ALL / NOTES / JOURNAL) + Category matching + active Search category filter
   const trimmedSearchQuery = searchQuery.trim().toLowerCase();
   const matchingNotes = useMemo(() => {
     if (!trimmedSearchQuery || searchScope === 'JOURNAL') return [];
-    return sortNotesList(
-      rawNotes.filter(
-        (n) =>
-          n.title.toLowerCase().includes(trimmedSearchQuery) ||
-          n.content.toLowerCase().includes(trimmedSearchQuery)
-      ),
+    const textMatches = rawNotes.filter((n) => {
+      const cat = (n.category ?? '').toLowerCase();
+      return (
+        n.title.toLowerCase().includes(trimmedSearchQuery) ||
+        n.content.toLowerCase().includes(trimmedSearchQuery) ||
+        cat.includes(trimmedSearchQuery)
+      );
+    });
+    return filterAndSortNotes(
+      textMatches,
+      searchCategoryFilter,
       'LAST_MODIFIED'
     );
-  }, [rawNotes, trimmedSearchQuery, searchScope]);
+  }, [rawNotes, trimmedSearchQuery, searchScope, searchCategoryFilter]);
 
   const matchingJournalEntries = useMemo(() => {
     if (!trimmedSearchQuery || searchScope === 'NOTES') return [];
     return journalEntries.filter(
       (e) =>
         e.title.toLowerCase().includes(trimmedSearchQuery) ||
-        e.content.toLowerCase().includes(trimmedSearchQuery)
+        e.content.toLowerCase().includes(trimmedSearchQuery) ||
+        (e.mood ?? '').toLowerCase().includes(trimmedSearchQuery)
     );
   }, [journalEntries, trimmedSearchQuery, searchScope]);
+
+  const editorCategoriesList = useMemo(() => {
+    const currentCat = noteEditor.category.trim();
+    if (
+      currentCat &&
+      !categories.some((c) => c.toLowerCase() === currentCat.toLowerCase())
+    ) {
+      return [...categories, currentCat];
+    }
+    return categories;
+  }, [categories, noteEditor.category]);
+
+  const filterBarItems = useMemo<
+    Array<{ key: string; label: string; filter: NoteCategoryFilter }>
+  >(() => {
+    return [
+      { key: 'filter-all', label: 'All notes', filter: { type: 'ALL' } },
+      {
+        key: 'filter-uncategorized',
+        label: 'Uncategorized',
+        filter: { type: 'UNCATEGORIZED' },
+      },
+      ...categories.map((cat) => ({
+        key: `filter-cat-${cat.toLowerCase()}`,
+        label: cat,
+        filter: { type: 'CATEGORY', name: cat } as NoteCategoryFilter,
+      })),
+    ];
+  }, [categories]);
+
+  const notesEmptyState = useMemo(() => {
+    if (noteCategoryFilter.type === 'CATEGORY') {
+      return {
+        title: `No notes in “${noteCategoryFilter.name}”.`,
+        description:
+          'Assign this category to a note or switch back to All notes.',
+      };
+    }
+    if (noteCategoryFilter.type === 'UNCATEGORIZED' && rawNotes.length > 0) {
+      return {
+        title: 'No uncategorized notes.',
+        description: 'Every saved note currently belongs to a category.',
+      };
+    }
+    return {
+      title: 'Nothing here yet.',
+      description:
+        'Keep ideas, useful information and little things worth remembering.',
+    };
+  }, [noteCategoryFilter, rawNotes.length]);
 
   return (
     <div className="min-h-screen bg-[#EAE3D7] dark:bg-[#1C1916] text-[#29231E] dark:text-[#F3EFE6] flex flex-col pb-24 transition-colors duration-150">
@@ -652,6 +954,7 @@ export default function App() {
                   {homeHighlights.map((item) => {
                     if (item.kind === 'note') {
                       const note = item.note;
+                      const noteCategory = (note.category ?? '').trim();
                       return (
                         <article
                           key={item.idKey}
@@ -660,7 +963,10 @@ export default function App() {
                         >
                           <p className="text-xs font-medium text-[#66503F] dark:text-[#D8C6AE] tabular-nums">
                             {note.isPinned ? 'Pinned · ' : ''}
-                            Notes · {formatEditorialTimestamp(note.updatedAt)}
+                            Notes
+                            {noteCategory ? ` · ${noteCategory}` : ''}
+                            {' · '}
+                            {formatEditorialTimestamp(note.updatedAt)}
                           </p>
                           <h3 className="font-editorial text-2xl font-medium text-[#29231E] dark:text-[#F3EFE6] mt-1 line-clamp-1">
                             {note.title}
@@ -802,6 +1108,83 @@ export default function App() {
                     />
                   </div>
 
+                  {/* Optional Category Selector */}
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <span className="text-xs font-medium text-[#5C5146] dark:text-[#B7AA9A]">
+                        Category (Optional)
+                      </span>
+                      <div className="flex items-center gap-3">
+                        {noteEditor.category.trim().length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setNoteEditor((prev) => ({
+                                ...prev,
+                                category: '',
+                              }))
+                            }
+                            className="text-xs font-medium text-[#5C5146] dark:text-[#B7AA9A] hover:text-[#29231E] dark:hover:text-[#F3EFE6] cursor-pointer"
+                          >
+                            Clear
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={openCategoryManager}
+                          className="text-xs font-medium text-[#66503F] dark:text-[#D8C6AE] hover:underline cursor-pointer"
+                        >
+                          Categories
+                        </button>
+                      </div>
+                    </div>
+
+                    <div
+                      role="group"
+                      aria-label="Note category selector"
+                      className="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setNoteEditor((prev) => ({ ...prev, category: '' }))
+                        }
+                        className={`min-h-[36px] px-3 py-1.5 rounded-[10px] border text-xs font-medium transition-colors cursor-pointer ${
+                          noteEditor.category.trim().length === 0
+                            ? 'bg-[#66503F] dark:bg-[#D8C6AE] border-[#66503F] dark:border-[#D8C6AE] text-[#F2ECE2] dark:text-[#1C1916]'
+                            : 'bg-[#F2ECE2] dark:bg-[#26221E] border-[#CFC3B2] dark:border-[#3E3730] text-[#5C5146] dark:text-[#B7AA9A] hover:border-[#66503F] dark:hover:border-[#D8C6AE]'
+                        }`}
+                      >
+                        None (Uncategorized)
+                      </button>
+
+                      {editorCategoriesList.map((cat) => {
+                        const isSelected =
+                          noteEditor.category.trim().toLowerCase() ===
+                          cat.toLowerCase();
+                        return (
+                          <button
+                            key={`editor-cat-${cat.toLowerCase()}`}
+                            type="button"
+                            onClick={() =>
+                              setNoteEditor((prev) => ({
+                                ...prev,
+                                category: cat,
+                              }))
+                            }
+                            className={`min-h-[36px] px-3 py-1.5 rounded-[10px] border text-xs font-medium transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-[#66503F] dark:bg-[#D8C6AE] border-[#66503F] dark:border-[#D8C6AE] text-[#F2ECE2] dark:text-[#1C1916]'
+                                : 'bg-[#F2ECE2] dark:bg-[#26221E] border-[#CFC3B2] dark:border-[#3E3730] text-[#5C5146] dark:text-[#B7AA9A] hover:border-[#66503F] dark:hover:border-[#D8C6AE]'
+                            }`}
+                          >
+                            {cat}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
                   <div>
                     <label
                       htmlFor="note-content-input"
@@ -844,7 +1227,7 @@ export default function App() {
               </form>
             ) : (
               /* NOTES LIST VIEW */
-              <div className="space-y-6 relative">
+              <div className="space-y-5 relative">
                 <div className="border-b border-[#CFC3B2] dark:border-[#3E3730] pb-6 flex flex-wrap items-end justify-between gap-4">
                   <div>
                     <h1 className="font-editorial text-4xl font-medium text-[#29231E] dark:text-[#F3EFE6]">
@@ -855,18 +1238,57 @@ export default function App() {
                     </p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={startNewNote}
-                    className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#66503F] dark:bg-[#D8C6AE] text-[#F2ECE2] dark:text-[#1C1916] text-xs font-medium flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer hover:opacity-95 transition-opacity"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>New Note</span>
-                  </button>
+                  <div className="flex items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={openCategoryManager}
+                      className="min-h-[44px] px-4 py-2.5 rounded-xl border border-[#CFC3B2] dark:border-[#3E3730] bg-[#F2ECE2] dark:bg-[#26221E] hover:border-[#66503F] dark:hover:border-[#D8C6AE] text-xs font-medium text-[#66503F] dark:text-[#D8C6AE] flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                    >
+                      <Tag className="w-3.5 h-3.5" />
+                      <span>Categories</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={startNewNote}
+                      className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#66503F] dark:bg-[#D8C6AE] text-[#F2ECE2] dark:text-[#1C1916] text-xs font-medium flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer hover:opacity-95 transition-opacity"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>New Note</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Category Filter Bar */}
+                <div
+                  role="group"
+                  aria-label="Filter notes by category"
+                  className="flex flex-wrap items-center gap-2"
+                >
+                  {filterBarItems.map((item) => {
+                    const isSelected = isSameCategoryFilter(
+                      noteCategoryFilter,
+                      item.filter
+                    );
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => setNoteCategoryFilter(item.filter)}
+                        className={`min-h-[36px] px-3.5 py-1.5 rounded-[10px] border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          isSelected
+                            ? 'bg-[#66503F] dark:bg-[#D8C6AE] border-[#66503F] dark:border-[#D8C6AE] text-[#F2ECE2] dark:text-[#1C1916]'
+                            : 'bg-[#F2ECE2] dark:bg-[#26221E] border-[#CFC3B2] dark:border-[#3E3730] text-[#5C5146] dark:text-[#B7AA9A] hover:border-[#66503F] dark:hover:border-[#D8C6AE]'
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {/* Notes Sorting Selector */}
-                {notes.length > 0 && (
+                {rawNotes.length > 0 && (
                   <div className="flex items-center">
                     <div
                       role="group"
@@ -903,64 +1325,73 @@ export default function App() {
                 {notes.length === 0 ? (
                   <div className="rounded-[20px] bg-[#F2ECE2] dark:bg-[#26221E] border border-[#CFC3B2] dark:border-[#3E3730] px-7 py-10">
                     <h2 className="font-editorial text-2xl sm:text-3xl font-medium text-[#29231E] dark:text-[#F3EFE6]">
-                      Nothing here yet.
+                      {notesEmptyState.title}
                     </h2>
                     <p className="text-[15px] text-[#5C5146] dark:text-[#B7AA9A] mt-2.5 leading-relaxed max-w-lg">
-                      Keep ideas, useful information and little things worth
-                      remembering.
+                      {notesEmptyState.description}
                     </p>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {notes.map((note) => (
-                      <article
-                        key={note.id}
-                        onClick={() => openExistingNote(note)}
-                        className={`group rounded-[18px] bg-[#F2ECE2] dark:bg-[#26221E] border p-5 transition-colors cursor-pointer flex flex-col justify-between ${
-                          note.isPinned
-                            ? 'border-[#66503F] dark:border-[#D8C6AE]'
-                            : 'border-[#CFC3B2] dark:border-[#3E3730] hover:border-[#66503F] dark:hover:border-[#D8C6AE]'
-                        }`}
-                      >
-                        <div>
-                          <div className="flex items-start justify-between gap-3">
-                            <h2 className="font-editorial text-2xl font-medium text-[#29231E] dark:text-[#F3EFE6] line-clamp-1">
-                              {note.title}
-                            </h2>
-
-                            <button
-                              type="button"
-                              onClick={(e) => handleToggleNoteCardPin(e, note)}
-                              aria-label={
-                                note.isPinned ? 'Unpin note' : 'Pin note'
-                              }
-                              className="min-h-[40px] min-w-[40px] -mt-1.5 -mr-1.5 rounded-xl flex items-center justify-center text-[#66503F] dark:text-[#D8C6AE] hover:bg-[#E3D9CA] dark:hover:bg-[#352F29] transition-colors shrink-0 cursor-pointer"
-                            >
-                              <Bookmark
-                                className={`w-4 h-4 ${
-                                  note.isPinned ? 'fill-current' : 'opacity-70'
-                                }`}
-                              />
-                            </button>
-                          </div>
-
-                          <p className="text-[15px] text-[#5C5146] dark:text-[#B7AA9A] mt-1 leading-relaxed line-clamp-2 whitespace-pre-line">
-                            {note.content}
-                          </p>
-                        </div>
-
-                        <p
-                          className={`text-xs font-medium mt-4 pt-3 border-t border-[#CFC3B2]/60 dark:border-[#3E3730] tabular-nums ${
+                    {notes.map((note) => {
+                      const noteCategory = (note.category ?? '').trim();
+                      return (
+                        <article
+                          key={note.id}
+                          onClick={() => openExistingNote(note)}
+                          className={`group rounded-[18px] bg-[#F2ECE2] dark:bg-[#26221E] border p-5 transition-colors cursor-pointer flex flex-col justify-between ${
                             note.isPinned
-                              ? 'text-[#66503F] dark:text-[#D8C6AE]'
-                              : 'text-[#665A4E] dark:text-[#B7AA9A]'
+                              ? 'border-[#66503F] dark:border-[#D8C6AE]'
+                              : 'border-[#CFC3B2] dark:border-[#3E3730] hover:border-[#66503F] dark:hover:border-[#D8C6AE]'
                           }`}
                         >
-                          {note.isPinned ? 'Pinned · ' : ''}
-                          Modified {formatEditorialTimestamp(note.updatedAt)}
-                        </p>
-                      </article>
-                    ))}
+                          <div>
+                            <div className="flex items-start justify-between gap-3">
+                              <h2 className="font-editorial text-2xl font-medium text-[#29231E] dark:text-[#F3EFE6] line-clamp-1">
+                                {note.title}
+                              </h2>
+
+                              <button
+                                type="button"
+                                onClick={(e) => handleToggleNoteCardPin(e, note)}
+                                aria-label={
+                                  note.isPinned ? 'Unpin note' : 'Pin note'
+                                }
+                                className="min-h-[40px] min-w-[40px] -mt-1.5 -mr-1.5 rounded-xl flex items-center justify-center text-[#66503F] dark:text-[#D8C6AE] hover:bg-[#E3D9CA] dark:hover:bg-[#352F29] transition-colors shrink-0 cursor-pointer"
+                              >
+                                <Bookmark
+                                  className={`w-4 h-4 ${
+                                    note.isPinned ? 'fill-current' : 'opacity-70'
+                                  }`}
+                                />
+                              </button>
+                            </div>
+
+                            {noteCategory && (
+                              <span className="inline-block mt-1 px-2.5 py-0.5 rounded-lg bg-[#E3D9CA] dark:bg-[#352F29] border border-[#CFC3B2] dark:border-[#3E3730] text-xs font-medium text-[#66503F] dark:text-[#D8C6AE]">
+                                {noteCategory}
+                              </span>
+                            )}
+
+                            <p className="text-[15px] text-[#5C5146] dark:text-[#B7AA9A] mt-2 leading-relaxed line-clamp-2 whitespace-pre-line">
+                              {note.content}
+                            </p>
+                          </div>
+
+                          <p
+                            className={`text-xs font-medium mt-4 pt-3 border-t border-[#CFC3B2]/60 dark:border-[#3E3730] tabular-nums ${
+                              note.isPinned
+                                ? 'text-[#66503F] dark:text-[#D8C6AE]'
+                                : 'text-[#665A4E] dark:text-[#B7AA9A]'
+                            }`}
+                          >
+                            {note.isPinned ? 'Pinned · ' : ''}
+                            {noteCategory ? `${noteCategory} · ` : ''}
+                            Modified {formatEditorialTimestamp(note.updatedAt)}
+                          </p>
+                        </article>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -1245,7 +1676,7 @@ export default function App() {
                   type="search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search titles, passages, or dates..."
+                  placeholder="Search titles, passages, categories, or dates..."
                   className="w-full min-h-[48px] pl-11 pr-11 py-3 rounded-[14px] bg-[#F2ECE2] dark:bg-[#26221E] border border-[#CFC3B2] dark:border-[#3E3730] focus:border-[#66503F] dark:focus:border-[#D8C6AE] focus:outline-none text-[15px] text-[#29231E] dark:text-[#F3EFE6] placeholder:text-[#665A4E] dark:placeholder:text-[#B7AA9A] disabled:bg-[#E3D9CA] disabled:text-[#817565] disabled:placeholder:text-[#817565]"
                 />
                 {searchQuery.length > 0 && (
@@ -1292,6 +1723,36 @@ export default function App() {
                   })}
                 </div>
               </div>
+
+              {/* Search Note Category Filter (when searching All or Notes and categories exist) */}
+              {searchScope !== 'JOURNAL' && categories.length > 0 && (
+                <div
+                  role="group"
+                  aria-label="Filter search notes by category"
+                  className="mt-3 flex flex-wrap items-center gap-2"
+                >
+                  {filterBarItems.map((item) => {
+                    const isSelected = isSameCategoryFilter(
+                      searchCategoryFilter,
+                      item.filter
+                    );
+                    return (
+                      <button
+                        key={`search-${item.key}`}
+                        type="button"
+                        onClick={() => setSearchCategoryFilter(item.filter)}
+                        className={`min-h-[34px] px-3 py-1 rounded-[10px] border text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          isSelected
+                            ? 'bg-[#66503F] dark:bg-[#D8C6AE] border-[#66503F] dark:border-[#D8C6AE] text-[#F2ECE2] dark:text-[#1C1916]'
+                            : 'bg-[#F2ECE2] dark:bg-[#26221E] border-[#CFC3B2] dark:border-[#3E3730] text-[#5C5146] dark:text-[#B7AA9A] hover:border-[#66503F] dark:hover:border-[#D8C6AE]'
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {!trimmedSearchQuery ? (
@@ -1306,24 +1767,30 @@ export default function App() {
               </p>
             ) : (
               <div className="space-y-4">
-                {matchingNotes.map((note) => (
-                  <article
-                    key={`search-note-${note.id}`}
-                    onClick={() => openExistingNote(note)}
-                    className="rounded-[16px] bg-[#F2ECE2] dark:bg-[#26221E] border border-[#CFC3B2] dark:border-[#3E3730] hover:border-[#66503F] dark:hover:border-[#D8C6AE] p-5 transition-colors cursor-pointer"
-                  >
-                    <p className="text-xs font-medium text-[#66503F] dark:text-[#D8C6AE] tabular-nums">
-                      {note.isPinned ? 'Pinned · ' : ''}
-                      Notes · Modified {formatEditorialTimestamp(note.updatedAt)}
-                    </p>
-                    <h2 className="font-editorial text-2xl font-medium text-[#29231E] dark:text-[#F3EFE6] mt-1 line-clamp-1">
-                      {note.title}
-                    </h2>
-                    <p className="text-[15px] text-[#5C5146] dark:text-[#B7AA9A] mt-1 line-clamp-2">
-                      {note.content}
-                    </p>
-                  </article>
-                ))}
+                {matchingNotes.map((note) => {
+                  const noteCategory = (note.category ?? '').trim();
+                  return (
+                    <article
+                      key={`search-note-${note.id}`}
+                      onClick={() => openExistingNote(note)}
+                      className="rounded-[16px] bg-[#F2ECE2] dark:bg-[#26221E] border border-[#CFC3B2] dark:border-[#3E3730] hover:border-[#66503F] dark:hover:border-[#D8C6AE] p-5 transition-colors cursor-pointer"
+                    >
+                      <p className="text-xs font-medium text-[#66503F] dark:text-[#D8C6AE] tabular-nums">
+                        {note.isPinned ? 'Pinned · ' : ''}
+                        Notes
+                        {noteCategory ? ` · ${noteCategory}` : ''}
+                        {' · '}
+                        Modified {formatEditorialTimestamp(note.updatedAt)}
+                      </p>
+                      <h2 className="font-editorial text-2xl font-medium text-[#29231E] dark:text-[#F3EFE6] mt-1 line-clamp-1">
+                        {note.title}
+                      </h2>
+                      <p className="text-[15px] text-[#5C5146] dark:text-[#B7AA9A] mt-1 line-clamp-2">
+                        {note.content}
+                      </p>
+                    </article>
+                  );
+                })}
 
                 {matchingJournalEntries.map((entry) => (
                   <article
@@ -1349,6 +1816,214 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Category Management Dialog */}
+      {categoryManager.isOpen && !categoryManager.categoryPendingDeletion && (
+        <div
+          className="fixed inset-0 z-50 bg-[#29231E]/50 flex items-center justify-center p-5"
+          onClick={closeCategoryManager}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="category-manager-title"
+            className="w-full max-w-lg rounded-[20px] bg-[#F2ECE2] dark:bg-[#26221E] border border-[#CFC3B2] dark:border-[#3E3730] p-6 space-y-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2
+                  id="category-manager-title"
+                  className="font-editorial text-2xl font-medium text-[#29231E] dark:text-[#F3EFE6]"
+                >
+                  Manage Categories
+                </h2>
+                <p className="text-sm text-[#5C5146] dark:text-[#B7AA9A] mt-1">
+                  Create, rename, or remove categories for your notes library.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeCategoryManager}
+                aria-label="Close category manager"
+                className="min-h-[36px] min-w-[36px] rounded-xl flex items-center justify-center text-[#5C5146] dark:text-[#B7AA9A] hover:text-[#29231E] dark:hover:text-[#F3EFE6] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={handleCreateCategory}
+              className="flex items-center gap-2.5"
+            >
+              <input
+                type="text"
+                value={categoryManager.newCategoryInput}
+                onChange={(e) =>
+                  setCategoryManager((prev) => ({
+                    ...prev,
+                    newCategoryInput: e.target.value,
+                    validationError: null,
+                  }))
+                }
+                placeholder="New category name…"
+                className="flex-1 min-h-[44px] px-3.5 py-2 rounded-xl bg-[#EAE3D7] dark:bg-[#1C1916] border border-[#CFC3B2] dark:border-[#3E3730] focus:border-[#66503F] dark:focus:border-[#D8C6AE] focus:outline-none text-sm text-[#29231E] dark:text-[#F3EFE6] placeholder:text-[#665A4E] dark:placeholder:text-[#B7AA9A]"
+              />
+              <button
+                type="submit"
+                className="min-h-[44px] px-4 py-2 rounded-xl bg-[#66503F] dark:bg-[#D8C6AE] text-[#F2ECE2] dark:text-[#1C1916] text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Add
+              </button>
+            </form>
+
+            {categoryManager.validationError && (
+              <div
+                role="alert"
+                className="rounded-xl bg-[#E3D9CA] dark:bg-[#352F29] border border-[#66503F] dark:border-[#D8C6AE] px-3.5 py-2.5 text-xs text-[#29231E] dark:text-[#F3EFE6]"
+              >
+                {getCategoryValidationErrorMessage(
+                  categoryManager.validationError
+                )}
+              </div>
+            )}
+
+            <div className="border-t border-[#CFC3B2] dark:border-[#3E3730] pt-4">
+              {categories.length === 0 ? (
+                <p className="text-sm text-[#5C5146] dark:text-[#B7AA9A]">
+                  No custom categories yet. Add one above to organize your notes.
+                </p>
+              ) : (
+                <div className="max-h-64 overflow-y-auto space-y-2 pr-1">
+                  {categories.map((cat) => {
+                    const isRenaming =
+                      categoryManager.renamingCategory?.toLowerCase() ===
+                      cat.toLowerCase();
+                    return (
+                      <div
+                        key={`manage-cat-${cat.toLowerCase()}`}
+                        className="rounded-xl bg-[#EAE3D7] dark:bg-[#1C1916] border border-[#CFC3B2] dark:border-[#3E3730] px-3.5 py-2.5"
+                      >
+                        {isRenaming ? (
+                          <div className="space-y-2.5">
+                            <input
+                              type="text"
+                              value={categoryManager.renameInput}
+                              onChange={(e) =>
+                                setCategoryManager((prev) => ({
+                                  ...prev,
+                                  renameInput: e.target.value,
+                                  validationError: null,
+                                }))
+                              }
+                              aria-label="Rename category"
+                              className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-[#F2ECE2] dark:bg-[#26221E] border border-[#66503F] dark:border-[#D8C6AE] focus:outline-none text-sm text-[#29231E] dark:text-[#F3EFE6]"
+                            />
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={cancelRenamingCategory}
+                                className="min-h-[34px] px-3 py-1 rounded-lg border border-[#CFC3B2] dark:border-[#3E3730] text-xs font-medium text-[#5C5146] dark:text-[#B7AA9A] cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleConfirmRenameCategory}
+                                className="min-h-[34px] px-3.5 py-1 rounded-lg bg-[#66503F] dark:bg-[#D8C6AE] text-[#F2ECE2] dark:text-[#1C1916] text-xs font-medium cursor-pointer"
+                              >
+                                Save
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-sm font-medium text-[#29231E] dark:text-[#F3EFE6] truncate">
+                              {cat}
+                            </span>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => startRenamingCategory(cat)}
+                                aria-label={`Rename ${cat}`}
+                                className="min-h-[34px] min-w-[34px] rounded-lg flex items-center justify-center text-[#66503F] dark:text-[#D8C6AE] hover:bg-[#E3D9CA] dark:hover:bg-[#352F29] cursor-pointer"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => requestDeleteCategory(cat)}
+                                aria-label={`Delete ${cat}`}
+                                className="min-h-[34px] min-w-[34px] rounded-lg flex items-center justify-center text-[#5C5146] dark:text-[#B7AA9A] hover:text-[#29231E] dark:hover:text-[#F3EFE6] hover:bg-[#E3D9CA] dark:hover:bg-[#352F29] cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end pt-1">
+              <button
+                type="button"
+                onClick={closeCategoryManager}
+                className="min-h-[40px] px-5 py-2 rounded-xl border border-[#CFC3B2] dark:border-[#3E3730] text-xs font-medium text-[#66503F] dark:text-[#D8C6AE] cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Category Confirmation Dialog */}
+      {categoryManager.categoryPendingDeletion && (
+        <div
+          className="fixed inset-0 z-50 bg-[#29231E]/50 flex items-center justify-center p-5"
+          onClick={dismissDeleteCategoryConfirmation}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-category-dialog-title"
+            className="w-full max-w-md rounded-[20px] bg-[#F2ECE2] dark:bg-[#26221E] border border-[#CFC3B2] dark:border-[#3E3730] p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2
+              id="delete-category-dialog-title"
+              className="font-editorial text-2xl font-medium text-[#29231E] dark:text-[#F3EFE6]"
+            >
+              Remove category “{categoryManager.categoryPendingDeletion}”?
+            </h2>
+            <p className="text-[15px] text-[#5C5146] dark:text-[#B7AA9A] leading-relaxed">
+              Notes in “{categoryManager.categoryPendingDeletion}” will not be
+              deleted. They will become Uncategorized and keep their content,
+              timestamps, and pin state.
+            </p>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={dismissDeleteCategoryConfirmation}
+                className="min-h-[44px] px-4 py-2 rounded-xl border border-[#CFC3B2] dark:border-[#3E3730] text-xs font-medium text-[#29231E] dark:text-[#F3EFE6] whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteCategory}
+                className="min-h-[44px] px-5 py-2 rounded-xl bg-[#66503F] dark:bg-[#D8C6AE] text-[#F2ECE2] dark:text-[#1C1916] text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Unsaved Changes Confirmation Dialog */}
       {pendingCancelTarget && (

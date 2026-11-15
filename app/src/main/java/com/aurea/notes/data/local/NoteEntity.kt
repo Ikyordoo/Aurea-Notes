@@ -8,7 +8,8 @@ import java.util.UUID
 /**
  * Room entity representing a user-created Note.
  * Includes [contentFormat] ("PLAIN_TEXT" by default) for rich-text editor architecture readiness,
- * and [isPinned] (defaults to false) for pinning important notes to the top of lists.
+ * [isPinned] (defaults to false) for pinning important notes to the top of lists,
+ * and [category] (defaults to "") for optional library organization.
  */
 @Entity(tableName = "notes")
 data class NoteEntity(
@@ -32,7 +33,10 @@ data class NoteEntity(
     val updatedAt: Long,
 
     @ColumnInfo(name = "is_pinned", defaultValue = "0")
-    val isPinned: Boolean = false
+    val isPinned: Boolean = false,
+
+    @ColumnInfo(name = "category", defaultValue = "''")
+    val category: String = ""
 ) {
     companion object {
         const val FORMAT_PLAIN_TEXT = "PLAIN_TEXT"
